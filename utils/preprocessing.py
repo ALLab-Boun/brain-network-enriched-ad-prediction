@@ -32,9 +32,17 @@ def preprocess_global_data_list(
             d.y = torch.tensor([int(d.pmci)], dtype=torch.long)
 
     # --- Optional edge pruning (global; no leakage) ---
-    if args.edge_threshold > 0.0:
-        print(f"Removing edges with weight below {args.edge_threshold} ...")
+    if args.edge_threshold < 1.0:
+        print(data_list[0].edge_index)
+        print(f"Keeping top {args.edge_threshold*100:.1f}% of edges by weight, removing the rest...")
         data_list = [remove_low_weight_edges_pyg(d, args.edge_threshold) for d in data_list]
+        # print the number of edges after pruning for the first graph as a sanity check
+        print(f"After pruning, graph 0 has {data_list[0].edge_index.size(1)} edges.")
+        # print some edge weights after pruning for the first graph as a sanity check
+        # edge_attr has edge weights
+        if hasattr(data_list[1], "edge_attr") and data_list[0].edge_attr is not None:
+            print("Sample edge weights after pruning (graph 0):", data_list[0].edge_attr[:])
+            print(data_list[1].edge_index)
 
     # --- Node feature selection (global; no leakage) ---
     selected = args.node_feature_set.lower()

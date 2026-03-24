@@ -2,6 +2,7 @@
 import os
 os.environ["PYTHONHASHSEED"] = "0"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 import argparse, random, datetime, json, math, copy
 import numpy as np, pandas as pd, matplotlib.pyplot as plt
 
@@ -127,7 +128,7 @@ def main(args, seed):
     if args.run_dir is not None:
         results_dir = args.run_dir
     else:
-        results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/exp4_results_tuned/{now}_fusion_model"
+        results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/{now+str(args.seed)}_fusion_model"
     os.makedirs(results_dir, exist_ok=True)
 
     all_prediction_records = []
@@ -176,7 +177,6 @@ def main(args, seed):
                 include_mlp=args.include_cortex_mlp,
                 include_cog_mlp=args.include_cog_mlp,
                 include_transformer=args.include_transformer,
-                cog_hidden_dim=args.cog_hidden_dim,
                 cortex_mlp_hidden_dim=args.cortex_mlp_hidden_dim,
 
                 # GNN
@@ -191,22 +191,41 @@ def main(args, seed):
                 gnn_num_layers=args.gnn_num_layers,
                 gnn_layer=args.gnn_layer,
 
+
+                # Cortex MLP
                 cortex_mlp_use_residual=args.cortex_mlp_use_residual,
                 cortex_mlp_activation = args.cortex_mlp_activation,
                 cortex_mlp_use_layernorm = args.cortex_mlp_use_layernorm,
                 cortex_mlp_num_layers = args.cortex_mlp_num_layers,
                 cortex_mlp_hidden_dims=args.cortex_mlp_hidden_dims,
                 cortex_mlp_width_mode=args.cortex_mlp_width_mode,
+                cortex_mlp_dropout=args.cortex_mlp_dropout,
 
+                # cognitive MLP
+                cog_hidden_dim=args.cog_hidden_dim,
+                cog_mlp_num_layers = args.cog_mlp_num_layers,
+                cog_mlp_width_mode=args.cog_mlp_width_mode,
+                cog_mlp_use_residual_to_last=args.cog_mlp_use_residual_to_last,
+                cog_mlp_dropout=args.cog_mlp_dropout,
+                cog_in_dim=cog_in_dim,
+
+
+                # other fusion and general hyperparameters
                 dropout=args.dropout,
                 adj_cnn_dropout=args.adj_cnn_dropout,
-                cog_mlp_dropout=args.cog_mlp_dropout,
+                adj_cnn_conv_channels=args.adj_cnn_conv_channels,
+                adj_cnn_kernel_sizes=args.adj_cnn_kernel_sizes,
+                adj_cnn_strides=args.adj_cnn_strides,
+                adj_cnn_pool_types=args.adj_cnn_pool_types,
+                adj_cnn_pool_kernel_sizes=args.adj_cnn_pool_kernel_sizes,
+                adj_cnn_negative_slope=args.adj_cnn_negative_slope,
+                adj_cnn_norm_type=args.adj_cnn_norm_type,
+                adj_cnn_group_norm_groups=args.adj_cnn_group_norm_groups,
+                adj_cnn_readout = args.adj_cnn_readout,
                 cort_transformer_dropout=args.cort_transformer_dropout,
-                cortex_mlp_dropout=args.cortex_mlp_dropout,
                 pos_encoding_type=args.pos_encoding_type,
                 lpe_dim=args.lpe_dim,
-                transformer_hidden_dim=args.transformer_hidden_dim
-                ,cog_in_dim=cog_in_dim,
+                transformer_hidden_dim=args.transformer_hidden_dim,
                 separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
             ).to(device)
 
@@ -245,7 +264,7 @@ def main(args, seed):
         g = torch.Generator()
         g.manual_seed(fold_seed)
 
-        train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, generator=g, num_workers=0)
+        train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, generator=g, num_workers=0, drop_last=True)
         test_loader  = DataLoader(test_data, batch_size=args.batch_size, shuffle=False, num_workers=0)
         if use_es:
             early_stopping_loader = DataLoader(early_stopping_data, batch_size=args.batch_size, shuffle=False, num_workers=0)
@@ -627,21 +646,21 @@ def main(args, seed):
 
     # Plot losses
     # Decide how to save based on number of folds
-    if len(all_epoch_metrics) == 1:
-        # Single fold -> one figure
-        plotting.plot_fold_curves(
-            all_epoch_metrics[0],
-            out_path=os.path.join(results_dir,"training_logs_plots", "fold1_curves.png"),
-            fold_idx=1
-        )
-    else:
-        # Multi-fold -> one per fold + optionally a combined overview (saved as separate images)
-        for i, fold_metrics in enumerate(all_epoch_metrics):
-            plotting.plot_fold_curves(
-                fold_metrics,
-                out_path=os.path.join(results_dir, "training_logs_plots", f"fold{i+1}_curves.png"),
-                fold_idx=i + 1
-            )
+    # if len(all_epoch_metrics) == 1:
+    #     # Single fold -> one figure
+    #     plotting.plot_fold_curves(
+    #         all_epoch_metrics[0],
+    #         out_path=os.path.join(results_dir,"training_logs_plots", "fold1_curves.png"),
+    #         fold_idx=1
+    #     )
+    # else:
+    #     # Multi-fold -> one per fold + optionally a combined overview (saved as separate images)
+    #     for i, fold_metrics in enumerate(all_epoch_metrics):
+    #         plotting.plot_fold_curves(
+    #             fold_metrics,
+    #             out_path=os.path.join(results_dir, "training_logs_plots", f"fold{i+1}_curves.png"),
+    #             fold_idx=i + 1
+    #         )
 
 
     val_key = "es_loss" if use_es else None
@@ -692,7 +711,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--dropout", type=float, default = 0.5) # classifier head dropout
     parser.add_argument("--include_cnn", action="store_true")
-    parser.add_argument("--include_cog_mlp", action="store_true")
     parser.add_argument("--include_transformer", action="store_true")
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
     parser.add_argument("--task", type=str, choices=["diagnosis", "conversion"], default="diagnosis")
@@ -701,7 +719,7 @@ if __name__ == "__main__":
     parser.add_argument("--include_gnn", action="store_true")
     parser.add_argument("--gnn_dropout", type=float, default=0.5)
     parser.add_argument("--gnn_hidden_dim", type=int, default=256)
-    parser.add_argument("--edge_threshold", type=float, default=0.0)
+    parser.add_argument("--edge_threshold", type=float, default=1.0)
     parser.add_argument("--gnn_num_layers", type=int, default=2)
     parser.add_argument("--gnn_layer", type=str, choices=["gcn", "sage", "gatv2", "gin"], default="gcn") # "gcn" | "sage" | "gatv2" | "gin"
     parser.add_argument("--add_adj_row_as_node_feature", action="store_true")
@@ -727,14 +745,28 @@ if __name__ == "__main__":
 
     # Adjacency CNN
     parser.add_argument("--adj_cnn_dropout", type=float, default=0.5)
+    parser.add_argument("--adj_cnn_conv_channels", type=int, nargs="+", default=[32, 256, 2048])
+    parser.add_argument("--adj_cnn_kernel_sizes", type=int, nargs="+", default=[7, 5, 3])
+    parser.add_argument("--adj_cnn_strides", type=int, nargs="+", default=[2, 2, 1])
+    parser.add_argument("--adj_cnn_pool_types", type=str, nargs="+", default=["max", "max", "avg"])
+    parser.add_argument("--adj_cnn_pool_kernel_sizes", type=int, nargs="+", default=[4, 4, 4])
+    parser.add_argument("--adj_cnn_negative_slope", type=float, default=0.01)
+    parser.add_argument("--adj_cnn_norm_type", type=str, default=None)
+    parser.add_argument("--adj_cnn_group_norm_groups", type=int, default=8)
+    parser.add_argument("--adj_cnn_readout", type=str, choices=["flatten", "gap", "gmp", "gap_gmp"], default="flatten")   
 
     # Cortex Transformer
     parser.add_argument("--cort_transformer_dropout", type=float, default=0.5)
     parser.add_argument("--transformer_hidden_dim", type=int, default=128)
 
     # Cognitive MLP
+    parser.add_argument("--include_cog_mlp", action="store_true")
     parser.add_argument("--cog_hidden_dim", type=int, default=128)
     parser.add_argument("--cog_mlp_dropout", type=float, default=0.5)
+    parser.add_argument("--cog_mlp_width_mode", type=str, default="constant")
+    parser.add_argument("--cog_mlp_num_layers", type=int, default=2)
+    parser.add_argument("--cog_mlp_use_residual_to_last", action="store_true")
+
 
     # positional encoding
     parser.add_argument("--add_laplacian_pe", action="store_true")

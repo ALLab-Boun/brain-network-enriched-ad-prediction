@@ -10,31 +10,168 @@ from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_su
 from torch_geometric.utils import add_self_loops, remove_self_loops
 from copy import deepcopy
 import pickle
+import math
+# def remove_low_weight_edges_pyg(data, threshold=0.05):
+#     """
+#     Remove edges from a PyG Data object whose edge_attr (assumed weight) is below threshold.
+#     Assumes undirected graph: if (u,v) is removed, (v,u) is also removed.
+#     """
+#     data = deepcopy(data)  # Clone the original to avoid in-place changes
 
-def remove_low_weight_edges_pyg(data, threshold=0.05):
+#     edge_index = data.edge_index
+#     edge_attr = data.edge_attr
+
+#     if edge_attr is None:
+#         raise ValueError("Edge attributes (edge_attr) are required for thresholding based on weight.")
+
+#     # Identify edges to keep
+#     keep_mask = edge_attr.view(-1) >= threshold
+
+#     # Apply the mask
+#     new_edge_index = edge_index[:, keep_mask]
+#     new_edge_attr = edge_attr[keep_mask]
+
+#     data.edge_index = new_edge_index
+#     data.edge_attr = new_edge_attr
+
+#     return data
+
+
+def remove_low_weight_edges_pyg(data, threshold=0.8):
     """
-    Remove edges from a PyG Data object whose edge_attr (assumed weight) is below threshold.
-    Assumes undirected graph: if (u,v) is removed, (v,u) is also removed.
+    Keep the top percentage of UNIQUE undirected edges in a PyG Data object.
+
+    Parameters
+    ----------
+    data : torch_geometric.data.Data
+        PyG graph with:
+          - edge_index of shape [2, E]
+          - edge_attr of shape [E] or [E, 1] (edge weights)
+        Assumes an undirected graph, typically stored with both (u,v) and (v,u).
+
+    threshold : float
+        Fraction of unique undirected edges to keep.
+        Examples:
+          - 0.0 -> keep no edges
+          - 0.8 -> keep top 80% of unique undirected edges by weight
+          - 1.0 -> keep all edges
+        Must satisfy 0 <= threshold <= 1.
+
+    Returns
+    -------
+    data : torch_geometric.data.Data
+        New copied Data object with filtered edge_index and edge_attr.
+
+    Notes
+    -----
+    - Unique undirected edges are identified by sorting endpoints:
+          (u, v) and (v, u) -> (min(u,v), max(u,v))
+    - If duplicate copies of the same undirected edge exist, this function keeps
+      the maximum weight among them for ranking.
+    - After selection, both directions are written back:
+          (u,v) and (v,u)
+      with the same weight.
     """
-    data = deepcopy(data)  # Clone the original to avoid in-place changes
+
+    if not (0 <= threshold <= 1):
+        raise ValueError(f"threshold must be in [0, 1], got {threshold}")
+
+    data = deepcopy(data)
 
     edge_index = data.edge_index
     edge_attr = data.edge_attr
 
     if edge_attr is None:
-        raise ValueError("Edge attributes (edge_attr) are required for thresholding based on weight.")
+        raise ValueError("edge_attr is required for weight-based filtering.")
 
-    # Identify edges to keep
-    keep_mask = edge_attr.view(-1) >= threshold
+    if edge_index is None or edge_index.numel() == 0:
+        return data
 
-    # Apply the mask
-    new_edge_index = edge_index[:, keep_mask]
-    new_edge_attr = edge_attr[keep_mask]
+    weights = edge_attr.view(-1)
+
+    if edge_index.size(1) != weights.size(0):
+        raise ValueError("edge_index and edge_attr must have the same number of edges.")
+
+    if threshold == 1.0:
+        return data
+
+    # Step 1: collect unique undirected edges
+    # key = (min(u,v), max(u,v))
+    # value = max weight seen for that undirected edge
+    undirected_edge_to_weight = {}
+
+    src = edge_index[0].tolist()
+    dst = edge_index[1].tolist()
+    wts = weights.tolist()
+
+    for u, v, w in zip(src, dst, wts):
+        a, b = (u, v) if u <= v else (v, u)
+        key = (a, b)
+
+        if key not in undirected_edge_to_weight:
+            undirected_edge_to_weight[key] = w
+        else:
+            undirected_edge_to_weight[key] = max(undirected_edge_to_weight[key], w)
+
+    unique_edges = list(undirected_edge_to_weight.items())
+    num_unique = len(unique_edges)
+
+    if num_unique == 0:
+        data.edge_index = edge_index[:, :0]
+        data.edge_attr = edge_attr[:0]
+        return data
+
+    # threshold == 0 -> remove all edges
+    if threshold == 0.0:
+        data.edge_index = edge_index[:, :0]
+        data.edge_attr = edge_attr[:0]
+        return data
+
+    # Step 2: compute how many unique undirected edges to keep
+    k = math.ceil(num_unique * threshold)
+    k = min(k, num_unique)
+
+    # Step 3: sort unique undirected edges by descending weight and keep top-k
+    unique_edges.sort(key=lambda x: x[1], reverse=True)
+    kept_unique_edges = unique_edges[:k]
+
+    # Step 4: rebuild edge_index and edge_attr with both directions
+    new_edges = []
+    new_weights = []
+
+    for (u, v), w in kept_unique_edges:
+        if u == v:
+            # self-loop: keep only once
+            new_edges.append([u, v])
+            new_weights.append(w)
+        else:
+            new_edges.append([u, v])
+            new_edges.append([v, u])
+            new_weights.append(w)
+            new_weights.append(w)
+
+    if len(new_edges) == 0:
+        new_edge_index = edge_index[:, :0]
+        new_edge_attr = edge_attr[:0]
+    else:
+        new_edge_index = torch.tensor(
+            new_edges, dtype=edge_index.dtype, device=edge_index.device
+        ).t().contiguous()
+
+        new_edge_attr = torch.tensor(
+            new_weights, dtype=edge_attr.dtype, device=edge_attr.device
+        )
+
+        # Preserve original edge_attr shape if it was [E, 1] or [E, ...]
+        if edge_attr.dim() > 1:
+            new_edge_attr = new_edge_attr.view(-1, *edge_attr.shape[1:])
 
     data.edge_index = new_edge_index
     data.edge_attr = new_edge_attr
 
     return data
+
+
 def read_cross_val(pkl_path):
     """
     Read the cross-validation splits from a pickle file.

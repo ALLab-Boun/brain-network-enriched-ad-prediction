@@ -19,12 +19,12 @@ BASE_CMD = [
 ]
 
 BASE_FOLDER = "./cv_tuning_val_974_split"
-OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/cortex_mlp/residual_layernorm_activation_study"
-DATASET_PATH = "./data/adni/CT_Vol_all_graphs_complete_features"
+OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjcnn/test"
+DATASET_PATH = "./data/adni/CT_Vol_graphs_complete_features_filtered_negative.pt"
 CROSS_VAL_PKL_PATH = "./data/adni/splits/tuning_cv_splits.pkl"
 
 # How many runs to keep active simultaneously
-MAX_PARALLEL = 2
+MAX_PARALLEL = 1
 
 # Keep 5 seconds between launches
 LAUNCH_STAGGER_SECONDS = 5
@@ -34,26 +34,102 @@ LAUNCH_STAGGER_SECONDS = 5
 # - Example: GPU_IDS = [0, 1]
 GPU_IDS = None
 
-# -----------------------------
-# Example param grid
-# -----------------------------
-param_grid = {
-    "lr": [5e-5, 5e-4],
-    "batch_size": [64, 128],
-    "epochs": [50],
-    "include_cortex_mlp": [True],
-    "dropout": [0.0, 0.2, 0.4],
-    "cortex_mlp_dropout": [0.0, 0.2, 0.4],
-    "cortex_mlp_hidden_dim": [32, 64, 128, 256],
-    "cortex_mlp_use_residual": [True],
-    "cortex_mlp_activation": ["leakyrelu"],
-    "cortex_mlp_use_layernorm": [True],
-    "cortex_mlp_num_layers": [1, 2, 3],
+# # -----------------------------
+# # Cortex MLP param grid
+# # -----------------------------
+# param_grid = {
+#     "lr": [5e-5, 5e-4],
+#     "batch_size": [64, 128],
+#     "epochs": [50],
+#     "include_cortex_mlp": [True],
+#     "dropout": [0.0, 0.2, 0.4],
+#     "cortex_mlp_dropout": [0.0, 0.2, 0.4],
+#     "cortex_mlp_hidden_dim": [32, 64, 128, 256],
+#     "cortex_mlp_use_residual": [True],
+#     "cortex_mlp_activation": ["leakyrelu"],
+#     "cortex_mlp_use_layernorm": [True],
+#     "cortex_mlp_num_layers": [1, 2, 3],
 
+#     "weight_decay": [5e-2],
+# }
+
+# -----------------------------
+# GNN param grid
+# -----------------------------
+# param_grid = {
+#     "include_gnn": [True],
+
+#     "lr": [ 5e-4],
+#     "batch_size": [64],
+#     "epochs": [50],
+#     "dropout": [0.0, 0.2, 0.5],
+
+#     # architecture
+#     "gnn_hidden_dim": [128],
+#     "gnn_num_layers": [2],
+#     "gnn_layer": ["gcn"],
+#     "gnn_layer_connectivity": ["stack", "skipsum", "skipcat"],
+
+#     # regularization
+#     "gnn_dropout": [0.0, 0.2, 0.5],
+#     # "gnn_norm_type": ["layernorm", "graphnorm"],
+
+#     # graph preprocessing
+#     "edge_threshold": [1.0],
+
+#     # # feature augmentations
+#     # "add_adj_row_as_node_feature": [False, True],
+#     # "separate_adj_features_instead_of_concat": [False],
+#     # "add_weighted_degree_as_node_feature": [False, True],
+
+#     # model options
+#     "gnn_use_pre_mlp": [True, False],
+#     "gnn_cnn_input_add_flattened_node_features": [True, False],
+#     "gnn_add_output_skip": [True, False],
+# }
+
+# Adjacency CNN param grid
+param_grid = {
+    "include_cnn": [True],
+    
+    # Fundamental training params
+    "lr": [5e-5],
+    "batch_size": [64],
+    "epochs": [125],
+    "dropout": [0, 0.2, 0.4],
+
+    # Architecture Capacity: lightweight to high
+    "adj_cnn_conv_channels": [
+        (16, 64, 128),
+        (32, 128, 256),
+        (32, 256, 512),
+    ],
+    
+    # Receptive Fields: Wide vs Local
+    "adj_cnn_kernel_sizes": [
+        [7, 5, 3],
+        [3, 3, 3],
+    ],
+    
+    # Downsampling Strategies
+    "adj_cnn_strides": [
+        [1, 1, 1], # Rely mostly on pooling
+        [2, 2, 1], # Aggressive downsampling early
+    ],
+    
+    # Pooling behaviors
+    "adj_cnn_pool_types": [
+        ["max", "max", "avg"],
+    ],
+    "adj_cnn_pool_kernel_sizes": [
+        [2, 2, 2],
+        [4, 4, 3],
+    ],
+    
+    "adj_cnn_norm_type": ["batch", "group"],
+    "adj_cnn_readout": ["flatten", "gap_gmp"],
     "weight_decay": [5e-2],
 }
-
-
 # =========================================================
 # Helpers for robust param matching
 # =========================================================
@@ -138,6 +214,9 @@ def make_cmd(params, run_dir):
         if isinstance(v, bool):
             if v:
                 cmd.append(f"--{k}")
+        elif isinstance(v, (list, tuple)):
+            cmd.append(f"--{k}")
+            cmd.extend(str(x) for x in v)
         else:
             cmd.append(f"--{k}={v}")
 
