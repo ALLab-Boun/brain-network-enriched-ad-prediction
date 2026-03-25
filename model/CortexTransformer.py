@@ -37,14 +37,16 @@ class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
     def __init__(self, num_nodes: int, node_in_dim: int, hidden_dim: int = 512,
                  out_dim: int = 128, num_heads: int = 4, num_layers: int = 2,
                  dropout: float = 0.5, negative_slope: float = 0.01,
-                 add_skip_connections: bool = True,
                  pos_encoding_type: str = "sinusoidal",
-                 lpe_dim: int = 8):
+                 lpe_dim: int = 8,
+                 cnn_input_add_flattened_node_features: bool = True,
+                 add_output_skip: bool = True):
         super().__init__()
         self.num_nodes = num_nodes
         self.dropout = dropout
         self.negative_slope = negative_slope
-        self.add_skip_connections = add_skip_connections
+        self.cnn_input_add_flattened_node_features = cnn_input_add_flattened_node_features
+        self.add_output_skip = add_output_skip
 
         #  Node + Positional Embedding 
         self.node_embed = nn.Linear(node_in_dim, hidden_dim)
@@ -85,8 +87,12 @@ class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
         )
 
         # Infer output size of CNN dynamically 
+        cnn_input_len = self.num_nodes * hidden_dim
+        if self.cnn_input_add_flattened_node_features:
+            cnn_input_len += self.num_nodes * node_in_dim
+
         with torch.no_grad():
-            dummy = torch.zeros(1, 1, num_nodes * (hidden_dim+node_in_dim))  # (batch, channels, length)
+            dummy = torch.zeros(1, 1, cnn_input_len)  # (batch, channels, length)
             conv_out = self.cnn_branch(dummy)
             conv_out_len = conv_out.shape[-1]
 
@@ -97,7 +103,8 @@ class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
         )
 
         # Skip connection projection (optional) 
-        self.feature_proj = nn.Linear(num_nodes * node_in_dim, out_dim)
+        if self.add_output_skip:
+            self.feature_proj = nn.Linear(self.num_nodes * node_in_dim, out_dim)
 
     def forward(self, x, lpe=None):
         # x: [B, N, node_in_dim]
@@ -157,12 +164,16 @@ class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
         #         # x = self.pos_encoding(x)
 
         x = self.transformer(x)                              # [B, N, hidden_dim]
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        # x = F.dropout(x, p=self.dropout, training=self.training)
 
         # Flatten node dimension
         x_flat = x.reshape(batch_size, -1)                   # [B, N * hidden_dim]
         x_init_flat = x_init.reshape(batch_size, -1)         # [B, N * node_in_dim]
-        x_concat = torch.cat([x_flat, x_init_flat], dim=-1)  # [B, combined_len]
+        
+        if self.cnn_input_add_flattened_node_features:
+            x_concat = torch.cat([x_flat, x_init_flat], dim=-1)  # [B, combined_len]
+        else:
+            x_concat = x_flat
 
         # CNN branch
         x_concat = x_concat.unsqueeze(1)                     # [B, 1, L]
@@ -173,7 +184,7 @@ class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
         x_out = self.fc_out(x_cnn)                           # [B, out_dim]
 
         # Skip connection
-        if self.add_skip_connections:
+        if self.add_output_skip:
             x_skip = self.feature_proj(x_init_flat)
             x_out = x_out + x_skip
 
