@@ -75,11 +75,11 @@ def main(args, seed):
     
     # Load and preprocess data
     # if dataset path is a pt file, use load_dataset_from_single_pt
-    data_list = general.load_dataset_from_single_pt(DATASET_PATH) if DATASET_PATH.endswith(".pt") else None
-    if data_list is None:
-        print("Loading dataset ...")
-        data_list = general.load_dataset(DATASET_PATH)
-        print(f"Loaded {len(data_list)} graphs.")
+    data_list = general.load_dataset_from_single_pt(DATASET_PATH, convert_labels=False if args.dataset == "oasis" else True) if DATASET_PATH.endswith(".pt") else None
+    # if data_list is None:
+    #     print("Loading dataset ...")
+    #     data_list = general.load_dataset(DATASET_PATH)
+    #     print(f"Loaded {len(data_list)} graphs.")
     num_nodes = data_list[0].x.shape[0]
     print(f"Each graph has {num_nodes} nodes and {data_list[0].x.shape[1]} node features.")
 
@@ -87,7 +87,7 @@ def main(args, seed):
     # early stopping data
     # list the filenames in the early stopping data path
     early_stopping_data_list_names = None
-    if use_es:
+    if use_es and args.dataset == "adni":
         with open("./data/adni/splits/combined_tuning_filenames.json", "r") as f:
             early_stopping_data_list_names = json.load(f)
 
@@ -110,9 +110,8 @@ def main(args, seed):
     # Build filename --> data map
     if args.dataset == "adni":
         filename_to_data = {data.ptid + "_" + data.viscode + ".pt": data for data in data_list}
-    elif args.dataset == "oasis": # TODO: FIX !!!
-        filename_to_data = {data.ptid + "_" + data.viscode + ".pt": data for data in data_list}
-
+    elif args.dataset == "oasis": 
+        filename_to_data = {data.oasis_id + "_" + data.scan_day + ".pt": data for data in data_list}
 
     # Results containers
     results = pd.DataFrame(columns=[
@@ -122,7 +121,6 @@ def main(args, seed):
     ])
     all_true, all_pred = [], []
     all_train_losses, all_test_losses, all_epoch_metrics = [], [], []
-
 
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.run_dir is not None:
@@ -154,14 +152,32 @@ def main(args, seed):
         # val files exist due to the previous convention, they are not actually used for validation
         # The actual validation for early stopping is done on the separate early_stopping_data which is 
         # loaded from EARLY_STOPPING_DATA_PATH and processed together with train and test data
-        if "val_files" in split:
-            train_files = split["train_files"] + split["val_files"]
-        else:
+        if args.dataset == "adni":
+            if "val_files" in split:
+                train_files = split["train_files"] + split["val_files"]
+            else:
+                train_files = split["train_files"]
+            test_files = split["test_files"]
+            train_data = [copy.deepcopy(filename_to_data[f]) for f in train_files if f in filename_to_data]
+            test_data  = [copy.deepcopy(filename_to_data[f]) for f in test_files if f in filename_to_data]
+            early_stopping_data = None
+            if use_es:
+                early_stopping_data = [copy.deepcopy(filename_to_data[f]) for f in early_stopping_data_list_names if f in filename_to_data]
+                print(f"Train size: {len(train_data)}, Test size: {len(test_data)}, Early stopping size: {len(early_stopping_data)}")
+            else:
+                print(f"Train size: {len(train_data)}, Test size: {len(test_data)}")
+        elif args.dataset == "oasis":
             train_files = split["train_files"]
-        test_files = split["test_files"]
-
-        train_data = [copy.deepcopy(filename_to_data[f]) for f in train_files if f in filename_to_data]
-        test_data  = [copy.deepcopy(filename_to_data[f]) for f in test_files if f in filename_to_data]
+            test_files = split["test_files"]
+            train_data = [copy.deepcopy(filename_to_data[f]) for f in train_files if f in filename_to_data]
+            test_data  = [copy.deepcopy(filename_to_data[f]) for f in test_files if f in filename_to_data]
+            print(f"Train size: {len(train_data)}, Test size: {len(test_data)}")
+            early_stopping_data = None  
+            if use_es:
+                # for OASIS, we can use the val_files from the split as early stopping data since we don't have a separate tuning set defined
+                early_stopping_files = split["val_files"] 
+                early_stopping_data = [copy.deepcopy(filename_to_data[f]) for f in early_stopping_files if f in filename_to_data]
+                print(f"Early stopping size: {len(early_stopping_data)}")
 
         # set seed for determinism
         fold_seed = args.seed + fold
@@ -173,11 +189,9 @@ def main(args, seed):
                 num_nodes=num_nodes,
                 node_in_dim=train_data[0].x.shape[1],
                 num_classes=2,
-                include_cnn=args.include_cnn,
-                include_mlp=args.include_cortex_mlp,
-                include_cog_mlp=args.include_cog_mlp,
-                include_transformer=args.include_transformer,
-                cortex_mlp_hidden_dim=args.cortex_mlp_hidden_dim,
+                dropout=args.dropout,
+                separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
+
 
                 # GNN
                 include_gnn=args.include_gnn,
@@ -190,9 +204,13 @@ def main(args, seed):
                 gnn_norm_type=args.gnn_norm_type,
                 gnn_num_layers=args.gnn_num_layers,
                 gnn_layer=args.gnn_layer,
+                gnn_readout=args.gnn_readout,
+                gnn_graph_pool=args.gnn_graph_pool,
 
 
                 # Cortex MLP
+                include_mlp=args.include_cortex_mlp,
+                cortex_mlp_hidden_dim=args.cortex_mlp_hidden_dim,
                 cortex_mlp_use_residual=args.cortex_mlp_use_residual,
                 cortex_mlp_activation = args.cortex_mlp_activation,
                 cortex_mlp_use_layernorm = args.cortex_mlp_use_layernorm,
@@ -201,7 +219,8 @@ def main(args, seed):
                 cortex_mlp_width_mode=args.cortex_mlp_width_mode,
                 cortex_mlp_dropout=args.cortex_mlp_dropout,
 
-                # cognitive MLP
+                # Cognitive MLP
+                include_cog_mlp=args.include_cog_mlp,
                 cog_hidden_dim=args.cog_hidden_dim,
                 cog_mlp_num_layers = args.cog_mlp_num_layers,
                 cog_mlp_width_mode=args.cog_mlp_width_mode,
@@ -209,9 +228,8 @@ def main(args, seed):
                 cog_mlp_dropout=args.cog_mlp_dropout,
                 cog_in_dim=cog_in_dim,
 
-
-                # other fusion and general hyperparameters
-                dropout=args.dropout,
+                # Adjacency CNN
+                include_cnn=args.include_cnn,
                 adj_cnn_dropout=args.adj_cnn_dropout,
                 adj_cnn_conv_channels=args.adj_cnn_conv_channels,
                 adj_cnn_kernel_sizes=args.adj_cnn_kernel_sizes,
@@ -222,26 +240,27 @@ def main(args, seed):
                 adj_cnn_norm_type=args.adj_cnn_norm_type,
                 adj_cnn_group_norm_groups=args.adj_cnn_group_norm_groups,
                 adj_cnn_readout = args.adj_cnn_readout,
+
+                # Cortex Transformer
+                include_transformer=args.include_transformer,
                 cort_transformer_dropout=args.cort_transformer_dropout,
                 pos_encoding_type=args.pos_encoding_type,
                 lpe_dim=args.lpe_dim,
-                transformer_hidden_dim=args.transformer_hidden_dim,
-                separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
+                cortex_transformer_hidden_dim=args.cortex_transformer_hidden_dim,
+                cortex_transformer_num_layers=args.cortex_transformer_num_layers,
+                cortex_transformer_num_heads=args.cortex_transformer_num_heads,
+                cortex_transformer_cnn_input_add_flattened_node_features=args.cortex_transformer_cnn_input_add_flattened_node_features,
+                cortex_transformer_add_output_skip=args.cortex_transformer_add_output_skip,
+
             ).to(device)
 
-        early_stopping_data = None
-        if use_es:
-            early_stopping_data = [copy.deepcopy(filename_to_data[f]) for f in early_stopping_data_list_names if f in filename_to_data]
-            print(f"Train size: {len(train_data)}, Test size: {len(test_data)}, Early stopping size: {len(early_stopping_data)}")
-        else:
-            print(f"Train size: {len(train_data)}, Test size: {len(test_data)}")
         
         # preprocess cognitive features
-        if args.dataset == "adni":
-            train_data, cog_scaler, cog_mean = preprocessing.preprocess_cognitive_features_train(train_data)
-            test_data = preprocessing.preprocess_cognitive_features_test(test_data, cog_scaler, cog_mean)
-            if use_es:
-                early_stopping_data = preprocessing.preprocess_cognitive_features_test(early_stopping_data, cog_scaler, cog_mean)
+        # if args.dataset == "adni":
+        train_data, cog_scaler, cog_mean = preprocessing.preprocess_cognitive_features_train(train_data)
+        test_data = preprocessing.preprocess_cognitive_features_test(test_data, cog_scaler, cog_mean)
+        if use_es:
+            early_stopping_data = preprocessing.preprocess_cognitive_features_test(early_stopping_data, cog_scaler, cog_mean)
 
         # ICV normalization: fit on training data, apply to both train and test
         if vol_sum_index is not None:
@@ -310,15 +329,14 @@ def main(args, seed):
         # Training
         fold_train_losses, fold_test_losses, epoch_metrics = [], [], []
 
-        # ---- Epoch 0 (initialization) logging ----
-
-        # ES placeholders (so you can always append a row without NameError)
+        # Epoch 0 (initialization) logging 
+        # ES placeholders 
         es_loss = es_acc = es_f1_weighted = es_f1_macro = es_auc = None
         es_precision = [None, None]
         es_recall = [None, None]
         es_conv_recall = None
         init_current = None
-        # Evaluate BEFORE any training step
+        # Evaluate before any training step
         init_test_loss, init_test_acc, init_f1_weighted, init_f1_macro, init_precision, init_recall, init_auc, init_conv_recall = \
             general.evaluate(model, test_loader, device, criterion=criterion)
 
@@ -396,7 +414,6 @@ def main(args, seed):
             bad_epochs = 0
             best_state = copy.deepcopy(model.state_dict())
         elif use_es:
-            # Usually keep bad_epochs=0 at init; don't penalize before training
             bad_epochs = 0
 
         msg = (
@@ -507,11 +524,17 @@ def main(args, seed):
             preds = logits.argmax(dim=1)
 
             for i in range(data.num_graphs):
-                ptid = data.ptid[i] if isinstance(data.ptid, list) else data.ptid
-                viscode = data.viscode[i] if isinstance(data.viscode, list) else data.viscode
-                label = int(data.y[i].cpu().item())
-                status = data.status[i]
-
+                if args.dataset == "adni":
+                    ptid = data.ptid[i] if isinstance(data.ptid, list) else data.ptid
+                    viscode = data.viscode[i] if isinstance(data.viscode, list) else data.viscode
+                    label = int(data.y[i].cpu().item())
+                    status = data.status[i]
+                elif args.dataset == "oasis":
+                    ptid = data.oasis_id[i] if isinstance(data.oasis_id, list) else data.oasis_id
+                    viscode = data.scan_day[i] if isinstance(data.scan_day, list) else data.scan_day
+                    label = int(data.y[i].cpu().item())
+                    status = None  # OASIS does not have a "status" field
+                
                 prediction = int(preds[i].cpu().item())
                 prob_mci = float(probs[i, 0].cpu().item())
                 prob_ad  = float(probs[i, 1].cpu().item())
@@ -610,57 +633,60 @@ def main(args, seed):
                 index=False
             )
 
-    # --- Conversion recall per fold ---
-    conv_recall_per_fold = (
-        prediction_df[prediction_df["status"] == "MCI to Dementia"]
-            .groupby("fold")["prediction"]
-            .apply(lambda s: (s == 1).mean())
-            .rename("Conversion_Recall")
-    )
-    # --- Count predicted positives / negatives per fold ---
-    pred_counts_per_fold = (
-        prediction_df[prediction_df["status"] == "MCI to Dementia"]
-            .groupby("fold")["prediction"]
-            .agg(
-                Num_Predicted_Positive=lambda s: (s == 1).sum(),
-                Num_Predicted_Negative=lambda s: (s == 0).sum()
-            )
-    )
-    conv_recall_summary = pd.concat(
-        [conv_recall_per_fold, pred_counts_per_fold],
-        axis=1
-    )
-    conv_recall_summary.to_csv(
-        os.path.join(results_dir, "conversion_recall_per_fold.csv")
-    )
+    if args.dataset == "adni":
+        # --- Conversion recall per fold ---
+        conv_recall_per_fold = (
+            prediction_df[prediction_df["status"] == "MCI to Dementia"]
+                .groupby("fold")["prediction"]
+                .apply(lambda s: (s == 1).mean())
+                .rename("Conversion_Recall")
+        )
+        # --- Count predicted positives / negatives per fold ---
+        pred_counts_per_fold = (
+            prediction_df[prediction_df["status"] == "MCI to Dementia"]
+                .groupby("fold")["prediction"]
+                .agg(
+                    Num_Predicted_Positive=lambda s: (s == 1).sum(),
+                    Num_Predicted_Negative=lambda s: (s == 0).sum()
+                )
+        )
+        conv_recall_summary = pd.concat(
+            [conv_recall_per_fold, pred_counts_per_fold],
+            axis=1
+        )
+        conv_recall_summary.to_csv(
+            os.path.join(results_dir, "conversion_recall_per_fold.csv")
+        )
 
-    conv_recall_mean = conv_recall_per_fold.mean()
-    conv_recall_std  = conv_recall_per_fold.std()
+        conv_recall_mean = conv_recall_per_fold.mean()
+        conv_recall_std  = conv_recall_per_fold.std()
+
     results.to_csv(os.path.join(results_dir, "fusion_results.csv"), index=False)
     means = results.drop(columns=["FOLD"]).mean()
     stds = results.drop(columns=["FOLD"]).std()
     summary = pd.DataFrame({"Mean": means, "Std": stds})
+    if args.dataset == "adni":
         # append the rows for conversion recall
-    summary.loc["Conversion_Recall"] = [conv_recall_mean, conv_recall_std]
+        summary.loc["Conversion_Recall"] = [conv_recall_mean, conv_recall_std]
     summary.to_csv(os.path.join(results_dir, "fusion_mean_std_results.csv"))
 
     # Plot losses
     # Decide how to save based on number of folds
-    # if len(all_epoch_metrics) == 1:
-    #     # Single fold -> one figure
-    #     plotting.plot_fold_curves(
-    #         all_epoch_metrics[0],
-    #         out_path=os.path.join(results_dir,"training_logs_plots", "fold1_curves.png"),
-    #         fold_idx=1
-    #     )
-    # else:
-    #     # Multi-fold -> one per fold + optionally a combined overview (saved as separate images)
-    #     for i, fold_metrics in enumerate(all_epoch_metrics):
-    #         plotting.plot_fold_curves(
-    #             fold_metrics,
-    #             out_path=os.path.join(results_dir, "training_logs_plots", f"fold{i+1}_curves.png"),
-    #             fold_idx=i + 1
-    #         )
+    if len(all_epoch_metrics) == 1:
+        # Single fold -> one figure
+        plotting.plot_fold_curves(
+            all_epoch_metrics[0],
+            out_path=os.path.join(results_dir,"training_logs_plots", "fold1_curves.png"),
+            fold_idx=1
+        )
+    else:
+        # Multi-fold -> one per fold + optionally a combined overview (saved as separate images)
+        for i, fold_metrics in enumerate(all_epoch_metrics):
+            plotting.plot_fold_curves(
+                fold_metrics,
+                out_path=os.path.join(results_dir, "training_logs_plots", f"fold{i+1}_curves.png"),
+                fold_idx=i + 1
+            )
 
 
     val_key = "es_loss" if use_es else None
@@ -699,8 +725,7 @@ def main(args, seed):
 # CLI
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fusion model (GNN + 2D CNN + MLP) with cross-validation")
-    # parser.add_argument("--base_folder", type=str, default="./cv_tuning_val_974_split")
-    parser.add_argument("--base_folder", type=str, default=r"C:\dev\GitHub\MIND\colab_data\cv_tuning_val_974_split")
+    parser.add_argument("--base_folder", type=str, default=".")
     parser.add_argument("--dataset_path", type=str, default=r"C:\Users\efeka\Documents\MIND_graphs\ADNI\MIND_graphs_CT_Vol\CT_Vol_graphs_complete_features_filtered_negative\pyg\CT_Vol_graphs_complete_features_filtered_negative.pt")
     parser.add_argument("--cross_val_pkl", type=str, default=r"C:\dev\GitHub\MIND\colab_data\cv_tuning_val_974_split\split_by_prog_category_9_7_4_seed93\cv\cross_val_splits_5fold_10perc_early_stop.pkl")
     parser.add_argument("--run_dir", type=str, default=None)
@@ -730,7 +755,8 @@ if __name__ == "__main__":
     parser.add_argument("--gnn_add_output_skip", action="store_true")
     parser.add_argument("--gnn_layer_connectivity", type=str, choices=["stack", "skipcat", "skipsum"], default="skipsum")
     parser.add_argument("--gnn_norm_type", type=str, default="layernorm")
-
+    parser.add_argument("--gnn_readout", type=str, choices=["cnn", "pool"], default="cnn")
+    parser.add_argument("--gnn_graph_pool", type=str, choices=["mean", "max", "sum", "mean_max"], default="mean_max")
 
     # Cortex MLP
     parser.add_argument("--include_cortex_mlp", action="store_true")
@@ -757,7 +783,11 @@ if __name__ == "__main__":
 
     # Cortex Transformer
     parser.add_argument("--cort_transformer_dropout", type=float, default=0.5)
-    parser.add_argument("--transformer_hidden_dim", type=int, default=128)
+    parser.add_argument("--cortex_transformer_hidden_dim", type=int, default=128)
+    parser.add_argument("--cortex_transformer_num_layers", type=int, default=2)
+    parser.add_argument("--cortex_transformer_num_heads", type=int, default=4)
+    parser.add_argument("--cortex_transformer_cnn_input_add_flattened_node_features", action="store_true")
+    parser.add_argument("--cortex_transformer_add_output_skip", action="store_true")
 
     # Cognitive MLP
     parser.add_argument("--include_cog_mlp", action="store_true")
@@ -766,7 +796,6 @@ if __name__ == "__main__":
     parser.add_argument("--cog_mlp_width_mode", type=str, default="constant")
     parser.add_argument("--cog_mlp_num_layers", type=int, default=2)
     parser.add_argument("--cog_mlp_use_residual_to_last", action="store_true")
-
 
     # positional encoding
     parser.add_argument("--add_laplacian_pe", action="store_true")
@@ -778,19 +807,18 @@ if __name__ == "__main__":
     parser.add_argument("--balanced_batches", action="store_true")
     parser.add_argument("--weight_decay", type=float, default=1e-2)
 
-
     # Feature set configs
     parser.add_argument("--node_feature_set", type=str, default="ct_vol_sa_mc_sd")
-    parser.add_argument("--excluded_node_features", choices=[None, "min_max", "std_min_max"], default=None)
+    parser.add_argument("--excluded_node_features", choices=[None, "min_max", "std_min_max"], default="std_min_max")
     parser.add_argument("--cog_feature_set", type=str, choices=["all", "no_adas"], default="all")
 
     # Early Stopping
     parser.add_argument("--early_stopping", action="store_true")
-    parser.add_argument("--es_monitor", type=str, default="es_loss",
+    parser.add_argument("--es_monitor", type=str, default="es_f1_weighted",
                         choices=["es_loss", "es_f1_weighted", "es_f1_macro", "es_acc", "es_auc"])
     parser.add_argument("--es_patience", type=int, default=10)
     parser.add_argument("--es_min_delta", type=float, default=1e-4)
-    parser.add_argument("--es_mode", type=str, default="min", choices=["min", "max"])  # "min" for loss, "max" for F1/AUC/acc
+    parser.add_argument("--es_mode", type=str, default="max", choices=["min", "max"])  # "min" for loss, "max" for F1/AUC/acc
 
     args = parser.parse_args()
     main(args, seed=args.seed)

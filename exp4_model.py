@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.GNN import GNNBranch_wo_pooling_with_1dcnn_flattened
+from model.GNN import GNNBranch_wo_pooling_with_1dcnn_flattened, GNNBranch_with_pooling
 from model.CortexMLP import MLPCorticalBranch
 from model.AdjacencyCNN import CNNAdjacency1D_Pool
 from model.CortexTransformer import TransformerCorticalBranch_with_1dcnn_flattened
@@ -11,13 +11,11 @@ from model.CognitiveMLP import MLPCogBranch
 
 # Fusion Model (Concatenation-based)
 class FusionModel(nn.Module):
-    def __init__(self, num_nodes: int, node_in_dim: int, num_classes: int = 2,
-                 hidden_dim: int = 128, gnn_hidden_dim: int = 256, cog_hidden_dim: int = 128,
-                 cortex_mlp_hidden_dim: int = 256, transformer_hidden_dim: int = 512,
-                 dropout: float = 0.7, gnn_dropout: float = 0.5, adj_cnn_dropout: float = 0.5, cog_mlp_dropout: float = 0.5,
-                 cort_transformer_dropout: float = 0.5, cortex_mlp_dropout: float = 0.5,
+    def __init__(self, num_nodes: int, node_in_dim: int, num_classes: int = 2, dropout: float = 0.7,   
 
                 # GNN
+                gnn_hidden_dim: int = 256,
+                gnn_dropout: float = 0.5,
                 gnn_use_pre_mlp=False,
                 gnn_cnn_input_add_flattened_node_features = False,
                 gnn_add_output_skip = False,
@@ -25,9 +23,12 @@ class FusionModel(nn.Module):
                 gnn_layer: str = "gcn",
                 gnn_num_layers: int = 2,
                 gnn_norm_type   = "layernorm", 
+                gnn_readout = "cnn", 
+                gnn_graph_pool = "mean_max",
 
                 
                 # Cortex MLP
+                cortex_mlp_hidden_dim: int = 256,
                 cortex_mlp_use_residual = False, cortex_mlp_activation = "leakyrelu",
                 cortex_mlp_use_layernorm = True, cortex_mlp_num_layers = 3,
                 cortex_mlp_hidden_dims = None,  # if None, will use cortex_mlp_hidden_dim and width_mode to determine hidden dims
@@ -35,18 +36,27 @@ class FusionModel(nn.Module):
 
                 # Cognitive MLP
                 cog_mlp_num_layers = 2, cog_mlp_width_mode = "constant", cog_mlp_use_residual_to_last = False,
+                cog_mlp_dropout: float = 0.5, cog_hidden_dim: int = 128,
                 
                 # Adjacency CNN
                 adj_cnn_conv_channels=(32, 256, 2048), adj_cnn_kernel_sizes=(7, 5, 3), 
                 adj_cnn_strides=(2, 2, 1), 
+                adj_cnn_dropout: float = 0.5,
                 adj_cnn_pool_types=("max", "max", "avg"), adj_cnn_pool_kernel_sizes=(4, 4, 4),
                 adj_cnn_negative_slope=0.01, adj_cnn_norm_type=None, adj_cnn_group_norm_groups=8,
                 adj_cnn_readout="flatten",  
+
+                # Cortex Transformer
+                cortex_transformer_num_layers=2, cortex_transformer_hidden_dim=512,
+                cort_transformer_dropout: float = 0.5, cortex_mlp_dropout: float = 0.5,
+                cortex_transformer_num_heads: int = 4,
+                cortex_transformer_cnn_input_add_flattened_node_features: bool = True,
+                cortex_transformer_add_output_skip: bool = True,
                 
                 include_gnn=True, include_cnn=False, include_mlp=True, include_transformer=False, include_cog_mlp=False,
                 pos_encoding_type="sinusoidal", lpe_dim=8, cog_in_dim=6,
-                 enable_modality_dropout: bool = True, p_drop_graph: float = 0.15, p_drop_cog: float = 0.35, modality_dropout_rescale: bool = True,
-                  separate_adj_features_instead_of_concat: bool = False):
+                enable_modality_dropout: bool = True, p_drop_graph: float = 0.15, p_drop_cog: float = 0.35, modality_dropout_rescale: bool = True,
+                separate_adj_features_instead_of_concat: bool = False):
         super().__init__()
 
         # Branch configurations
@@ -66,6 +76,8 @@ class FusionModel(nn.Module):
         self.gnn_layer = gnn_layer
         self.gnn_num_layers = gnn_num_layers
         self.gnn_norm_type = gnn_norm_type
+        self.gnn_readout = gnn_readout
+        self.gnn_graph_pool = gnn_graph_pool
 
         # Cortex MLP
         self.cortex_mlp_use_residual = cortex_mlp_use_residual 
@@ -100,6 +112,10 @@ class FusionModel(nn.Module):
         self.cog_mlp_dropout = cog_mlp_dropout  
         self.cort_transformer_dropout = cort_transformer_dropout
         self.cortex_mlp_dropout = cortex_mlp_dropout
+        self.cortex_transformer_num_layers = cortex_transformer_num_layers
+        self.cortex_transformer_num_heads = cortex_transformer_num_heads
+        self.cortex_transformer_cnn_input_add_flattened_node_features = cortex_transformer_cnn_input_add_flattened_node_features
+        self.cortex_transformer_add_output_skip = cortex_transformer_add_output_skip
         
 
         # TODO
@@ -112,16 +128,22 @@ class FusionModel(nn.Module):
 
         # Branches 
         if include_gnn:
-            if not self.separate_adj_features_instead_of_concat:
-                self.gnn = GNNBranch_wo_pooling_with_1dcnn_flattened(node_in_dim=node_in_dim, hidden_dim=gnn_hidden_dim, 
-                        out_dim=128, dropout=self.gnn_dropout, num_gnn_layers=self.gnn_num_layers, norm_type="layernorm", 
-                        gnn_layer=gnn_layer, use_pre_mlp=self.gnn_use_pre_mlp, cnn_input_add_flattened_node_features=self.gnn_cnn_input_add_flattened_node_features,
-                        add_output_skip=self.gnn_add_output_skip, layer_connectivity=self.gnn_layer_connectivity)
-            else:
-                self.gnn = GNNBranch_wo_pooling_with_1dcnn_flattened(node_in_dim=num_nodes, hidden_dim=gnn_hidden_dim, 
-                        out_dim=128, dropout=self.gnn_dropout, num_gnn_layers=self.gnn_num_layers, norm_type="layernorm", 
-                        gnn_layer=gnn_layer, use_pre_mlp=self.gnn_use_pre_mlp, cnn_input_add_flattened_node_features=self.gnn_cnn_input_add_flattened_node_features,
-                        add_output_skip=self.gnn_add_output_skip, layer_connectivity=self.gnn_layer_connectivity)
+            if self.gnn_readout == "cnn":
+                if not self.separate_adj_features_instead_of_concat:
+                    self.gnn = GNNBranch_wo_pooling_with_1dcnn_flattened(node_in_dim=node_in_dim, hidden_dim=gnn_hidden_dim, 
+                            out_dim=128, dropout=self.gnn_dropout, num_gnn_layers=self.gnn_num_layers, norm_type="layernorm", 
+                            gnn_layer=gnn_layer, use_pre_mlp=self.gnn_use_pre_mlp, cnn_input_add_flattened_node_features=self.gnn_cnn_input_add_flattened_node_features,
+                            add_output_skip=self.gnn_add_output_skip, layer_connectivity=self.gnn_layer_connectivity)
+                else: # The case where adjacency features are used
+                    self.gnn = GNNBranch_wo_pooling_with_1dcnn_flattened(node_in_dim=num_nodes, hidden_dim=gnn_hidden_dim, 
+                            out_dim=128, dropout=self.gnn_dropout, num_gnn_layers=self.gnn_num_layers, norm_type="layernorm", 
+                            gnn_layer=gnn_layer, use_pre_mlp=self.gnn_use_pre_mlp, cnn_input_add_flattened_node_features=self.gnn_cnn_input_add_flattened_node_features,
+                            add_output_skip=self.gnn_add_output_skip, layer_connectivity=self.gnn_layer_connectivity)
+            elif self.gnn_readout == "pool":
+                self.gnn = GNNBranch_with_pooling(node_in_dim=node_in_dim, hidden_dim=gnn_hidden_dim, 
+                            out_dim=128, dropout=self.gnn_dropout, num_gnn_layers=self.gnn_num_layers, norm_type="layernorm", 
+                            gnn_layer=gnn_layer, use_pre_mlp=self.gnn_use_pre_mlp, graph_pool=self.gnn_graph_pool,
+                            add_output_skip=self.gnn_add_output_skip, layer_connectivity=self.gnn_layer_connectivity)
         if include_cnn:
             self.cnn = CNNAdjacency1D_Pool(num_nodes, 
                                           out_dim=128,
@@ -145,7 +167,20 @@ class FusionModel(nn.Module):
                                          use_residual=self.cortex_mlp_use_residual,
                                          width_mode=self.cortex_mlp_width_mode)
         if include_transformer:
-            self.transformer = TransformerCorticalBranch_with_1dcnn_flattened(num_nodes, node_in_dim, hidden_dim=transformer_hidden_dim, out_dim=128, dropout=self.cort_transformer_dropout, pos_encoding_type=pos_encoding_type,lpe_dim=lpe_dim)
+            if not self.separate_adj_features_instead_of_concat:
+                transformer_node_in_dim = node_in_dim
+            else:                
+                transformer_node_in_dim = num_nodes  # using adjacency features as input
+            self.transformer = TransformerCorticalBranch_with_1dcnn_flattened(
+                    num_nodes, transformer_node_in_dim,
+                    hidden_dim=cortex_transformer_hidden_dim, out_dim=128,
+                    num_heads=self.cortex_transformer_num_heads,
+                    num_layers=self.cortex_transformer_num_layers,
+                    dropout=self.cort_transformer_dropout,
+                    pos_encoding_type=pos_encoding_type, lpe_dim=lpe_dim,
+                    cnn_input_add_flattened_node_features=self.cortex_transformer_cnn_input_add_flattened_node_features,
+                    add_output_skip=self.cortex_transformer_add_output_skip
+                )
         if include_cog_mlp:
             self.cog_branch = MLPCogBranch(cog_in_dim=cog_in_dim, hidden_dim=cog_hidden_dim, out_dim=128, 
                                            dropout=self.cog_mlp_dropout, num_layers=self.cog_mlp_num_layers,
@@ -201,10 +236,14 @@ class FusionModel(nn.Module):
             zs.append(self.mlp(x_flat))
         if self.include_transformer:
             from torch_geometric.utils import to_dense_batch
-            x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
-
-            # keep as [B, num_nodes, node_in_dim]
-            zs.append(self.transformer(x_dense, lpe=lpe))
+            if not self.separate_adj_features_instead_of_concat:
+                x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
+                # keep as [B, num_nodes, node_in_dim]
+                zs.append(self.transformer(x_dense, lpe=lpe))
+            else:
+                x_adj_row = getattr(data, "x_adj_row", None)
+                x_adj_row_dense, mask = to_dense_batch(x_adj_row, batch, max_num_nodes=self.num_nodes)
+                zs.append(self.transformer(x_adj_row_dense, lpe=lpe))
         if self.include_cog_mlp:
             batch_size = data.num_graphs  # number of graphs in the batch
             feat_dim = data.x_cog.numel() // batch_size

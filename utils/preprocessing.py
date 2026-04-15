@@ -13,7 +13,10 @@ def preprocess_global_data_list(
     """
 
     sample = data_list[0]
-    print(sample.ptid, sample.viscode, "has weighted_adj_matrix with shape", sample.weighted_adj_matrix.shape)
+    if args.dataset == "adni":
+        print(sample.ptid, sample.viscode, "has weighted_adj_matrix with shape", sample.weighted_adj_matrix.shape)
+    elif args.dataset == "oasis":
+        print(sample.oasis_id, sample.scan_day, "has weighted_adj_matrix with shape", sample.weighted_adj_matrix.shape)
 
     # --- Optional Laplacian PE (global; doesn't use labels) ---
     if args.add_laplacian_pe:
@@ -379,6 +382,14 @@ def preprocess_cognitive_features_train(data_list_train):
             scaler.transform(data.x_cog.numpy()),
             dtype=torch.float32
         )  # (1, F)
+
+    # Check whether cognitive features are now NaN-free and scaled (mean ~0, std ~1)
+    # for data in data_list_train:
+    #     if torch.isnan(data.x_cog).any():
+    #         raise ValueError("NaN values found in cognitive features after preprocessing.")
+    #     mean = data.x_cog.mean().item()
+    #     std = data.x_cog.std().item()
+    #     print(f"Post-scaling cognitive features: mean={mean:.4f}, std={std:.4f}")
 
     return data_list_train, scaler, feat_mean
 

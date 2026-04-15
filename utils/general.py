@@ -227,7 +227,7 @@ def load_dataset(dataset_path: str, apply_log_transform: bool = False, convert_l
     print(f"Loaded {len(data_list)} PyG graphs (self-loops weight={fill_value}, log-transform={apply_log_transform}).")
     return data_list
 
-def load_dataset_from_single_pt(dataset_path: str, apply_log_transform: bool = False):
+def load_dataset_from_single_pt(dataset_path: str, apply_log_transform: bool = False, convert_labels: bool = True):
     """Load a single .pt file containing a list of PyG data objects."""
     data_list = torch.load(dataset_path, weights_only=False)
     fill_value = 1  # weight for self-loops
@@ -252,7 +252,8 @@ def load_dataset_from_single_pt(dataset_path: str, apply_log_transform: bool = F
             except:
                 print(f"Warning: could not process self-loops or log-transform for a data object.")
         # Convert label to 0/1
-        data.y = (data.y - 1).long().view(-1)
+        if convert_labels:
+            data.y = (data.y - 1).long().view(-1)
         data_list_processed.append(data)
     print(f"Loaded {len(data_list_processed)} PyG graphs from single .pt file (self-loops weight={fill_value}, log-transform={apply_log_transform}).")
     return data_list_processed

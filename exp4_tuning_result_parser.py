@@ -5,7 +5,8 @@ import glob
 import pandas as pd
 
 # Root folder containing all hyperparameter tuning run directories
-OUTPUT_ROOT = r"/content/drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/gnn/unified_model_first_tuning_run"
+# OUTPUT_ROOT = r"/content/drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/gnn/unified_model_first_tuning_run"
+OUTPUT_ROOT = r"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjgnn/5e-5"
 
 # Path for the aggregated summary output
 SUMMARY_PATH = os.path.join(os.path.dirname(OUTPUT_ROOT), "unified_aggregated_summary.csv")
@@ -273,9 +274,9 @@ def main():
     df = pd.DataFrame(summaries)
 
     if "best_test_f1_weighted_mean" in df.columns:
-        df = df.sort_values(by="best_avg_test_f1_weighted", ascending=False)
+        df = df.sort_values(by="best_test_f1_weighted_mean", ascending=False)
     elif "best_test_loss_mean" in df.columns:
-        df = df.sort_values(by="best_avg_test_loss", ascending=True)
+        df = df.sort_values(by="best_test_loss_mean", ascending=True)
 
     df.to_csv(SUMMARY_PATH, index=False)
     print(f"Summary saved to: {SUMMARY_PATH}")

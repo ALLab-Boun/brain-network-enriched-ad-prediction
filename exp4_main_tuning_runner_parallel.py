@@ -19,7 +19,7 @@ BASE_CMD = [
 ]
 
 BASE_FOLDER = "./cv_tuning_val_974_split"
-OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjcnn/test"
+OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjgnn/_5e-5"
 DATASET_PATH = "./data/adni/CT_Vol_graphs_complete_features_filtered_negative.pt"
 CROSS_VAL_PKL_PATH = "./data/adni/splits/tuning_cv_splits.pkl"
 
@@ -88,49 +88,190 @@ GPU_IDS = None
 #     "gnn_add_output_skip": [True, False],
 # }
 
-# Adjacency CNN param grid
-param_grid = {
-    "include_cnn": [True],
-    
-    # Fundamental training params
-    "lr": [5e-5],
-    "batch_size": [64],
-    "epochs": [125],
-    "dropout": [0, 0.2, 0.4],
 
-    # Architecture Capacity: lightweight to high
-    "adj_cnn_conv_channels": [
-        (16, 64, 128),
-        (32, 128, 256),
-        (32, 256, 512),
-    ],
+
+# Adjacency CNN param grid
+# param_grid = {
+#     "include_cnn": [True],
     
-    # Receptive Fields: Wide vs Local
-    "adj_cnn_kernel_sizes": [
-        [7, 5, 3],
-        [3, 3, 3],
-    ],
+#     # Fundamental training params
+#     "lr": [5e-5],
+#     "batch_size": [64],
+#     "epochs": [125],
+#     "dropout": [0, 0.2, 0.4],
+
+#     # Architecture Capacity: lightweight to high
+#     "adj_cnn_conv_channels": [
+#         (16, 64, 128),
+#         (32, 128, 256),
+#         (32, 256, 512),
+#     ],
+
+#     "adj_cnn_dropout": [0.0, 0.2],
     
-    # Downsampling Strategies
-    "adj_cnn_strides": [
-        [1, 1, 1], # Rely mostly on pooling
-        [2, 2, 1], # Aggressive downsampling early
-    ],
+#     # Receptive Fields: Wide vs Local
+#     "adj_cnn_kernel_sizes": [
+#         [7, 5, 3],
+#         [3, 3, 3],
+#     ],
     
-    # Pooling behaviors
-    "adj_cnn_pool_types": [
-        ["max", "max", "avg"],
-    ],
-    "adj_cnn_pool_kernel_sizes": [
-        [2, 2, 2],
-        [4, 4, 3],
-    ],
+#     # Downsampling Strategies
+#     "adj_cnn_strides": [
+#         [1, 1, 1], # Rely mostly on pooling
+#         [2, 2, 1], # Aggressive downsampling early
+#     ],
     
-    "adj_cnn_norm_type": ["batch", "group"],
-    "adj_cnn_readout": ["flatten", "gap_gmp"],
-    "weight_decay": [5e-2],
+#     # Pooling behaviors
+#     "adj_cnn_pool_types": [
+#         ["max", "max", "avg"],
+#     ],
+#     "adj_cnn_pool_kernel_sizes": [
+#         [2, 2, 2],
+#         [4, 4, 3],
+#     ],
+    
+#     "adj_cnn_norm_type": ["batch", "group"],
+#     "adj_cnn_readout": ["flatten", "gap_gmp"],
+#     "weight_decay": [5e-2],
+# }
+
+
+# -----------------------------
+# Cortex Transformer param grid
+# -----------------------------
+# param_grid = {
+#     "include_transformer": [True],
+
+#     # Fundamental training params
+#     "lr": [5e-5, 5e-4],
+#     "batch_size": [64],
+#     "epochs": [30],
+#     "dropout": [0.0, 0.2, 0.4],
+
+#     # Architecture Capacity
+#     "cortex_transformer_hidden_dim": [128],
+#     "cortex_transformer_num_layers": [2],
+#     "cortex_transformer_num_heads": [4],
+    
+#     # Regularization
+#     "cort_transformer_dropout": [0.0, 0.2, 0.4],
+#     "weight_decay": [5e-2],
+
+#     # Positional Encoding
+#     "pos_encoding_type": ["lpe", "none", "learnable"],
+
+#     "add_laplacian_pe": [True],
+# #     # "add_adj_row_as_node_feature": [False, True],
+# #     # "separate_adj_features_instead_of_concat": [False],
+#     # Connectivity & Feature aug
+#     "cortex_transformer_cnn_input_add_flattened_node_features": [True, False],
+#     "cortex_transformer_add_output_skip": [True, False],
+# }
+
+
+# -----------------------------
+# GNN  POOL param grid
+# -----------------------------
+# param_grid = {
+#     "include_gnn": [True],
+
+#     "lr": [ 5e-4],
+#     "batch_size": [64],
+#     "epochs": [1],
+#     "dropout": [0.2],
+
+#     # architecture
+#     "gnn_hidden_dim": [64, 128, 512],
+#     "gnn_num_layers": [1, 2, 5],
+#     "gnn_layer": ["gcn"],
+#     "gnn_layer_connectivity": ["stack"], #, "skipsum", "skipcat"],
+#     "gnn_readout": ["pool"],
+#     "gnn_graph_pool": ["mean", "max", "sum", "mean_max"],
+
+#     # regularization
+#     "gnn_dropout": [0.2],
+#     # "gnn_norm_type": ["layernorm", "graphnorm"],
+
+#     # graph preprocessing
+#     "edge_threshold": [1.0],
+
+#     # # feature augmentations
+#     # "add_adj_row_as_node_feature": [False, True],
+#     # "separate_adj_features_instead_of_concat": [False],
+#     # "add_weighted_degree_as_node_feature": [False, True],
+
+#     # model options
+#     "gnn_use_pre_mlp": [True],
+#     "gnn_add_output_skip": [True],
+# }
+
+
+# # -----------------------------
+# # GNN param grid adjacency
+# # -----------------------------
+param_grid = {
+    "include_gnn": [True],
+
+    "lr": [ 5e-5],
+    "batch_size": [64],
+    "epochs": [150],
+    "dropout": [0.2, 0.4],
+
+    # architecture
+    "gnn_hidden_dim": [256, 128, 64],
+    "gnn_num_layers": [2, 1],
+    "gnn_layer": ["gcn"],
+    "gnn_layer_connectivity": ["skipsum"],
+
+    # regularization
+    "gnn_dropout": [0.2, 0.4],
+    # "gnn_norm_type": ["layernorm", "graphnorm"],
+
+    # graph preprocessing
+    "edge_threshold": [1.0],
+
+    # # feature augmentations
+    "add_adj_row_as_node_feature": [True],
+    "separate_adj_features_instead_of_concat": [True],
+
+    # model options
+    "gnn_use_pre_mlp": [True],
+    "gnn_cnn_input_add_flattened_node_features": [True],
+    "gnn_add_output_skip": [True],
 }
-# =========================================================
+
+# -----------------------------
+# # Adj Cortex Transformer param grid
+# # -----------------------------
+param_grid = {
+    "include_transformer": [True],
+
+    # Fundamental training params
+    "lr": [5e-5, 5e-4],
+    "batch_size": [64],
+    "epochs": [90],
+    "dropout": [0.4],
+
+    # Architecture Capacity
+    "cortex_transformer_hidden_dim": [64,128,256],
+    "cortex_transformer_num_layers": [1,2],
+    "cortex_transformer_num_heads": [1,4,8],
+    
+    # Regularization
+    "cort_transformer_dropout": [0.4],
+    "weight_decay": [5e-2],
+
+    # Positional Encoding
+    "pos_encoding_type": [ "none", "learnable"],
+
+    "add_laplacian_pe": [True],
+    "add_adj_row_as_node_feature": [ True],
+    "separate_adj_features_instead_of_concat": [True],
+    # Connectivity & Feature aug
+    "cortex_transformer_cnn_input_add_flattened_node_features": [True],
+    "cortex_transformer_add_output_skip": [ True, False],
+}
+# # =========================================================
 # Helpers for robust param matching
 # =========================================================
 def _canon_value(v):
