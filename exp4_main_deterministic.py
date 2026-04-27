@@ -38,7 +38,6 @@ def main(args, seed):
     random.seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    BASE_FOLDER = args.base_folder
     DATASET_PATH = args.dataset_path
     CROSS_VAL_PKL_PATH = args.cross_val_pkl
     use_es = args.early_stopping  
@@ -71,8 +70,6 @@ def main(args, seed):
     else:        
         raise ValueError(f"Unknown option for --excluded_node_features: {args.excluded_node_features}")
         
-
-    
     # Load and preprocess data
     # if dataset path is a pt file, use load_dataset_from_single_pt
     data_list = general.load_dataset_from_single_pt(DATASET_PATH, convert_labels=False if args.dataset == "oasis" else True) if DATASET_PATH.endswith(".pt") else None

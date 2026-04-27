@@ -200,6 +200,7 @@ class FusionModel(nn.Module):
             concat_dim += 128
         if include_cog_mlp:
             concat_dim += 128
+        self.concat_dim = concat_dim
 
         # Final classifier 
         self.classifier = nn.Sequential(
@@ -208,53 +209,117 @@ class FusionModel(nn.Module):
             nn.Linear(concat_dim, num_classes)
         )
 
-    def forward(self, data):
+
+    def encode(self, data):
         edge_index, edge_attr = data.edge_index, getattr(data, "edge_attr", None)
         x, x_cog, lpe = data.x, getattr(data, "x_cog", None), getattr(data, "laplacian_pe", None)
         batch = getattr(data, "batch", torch.zeros(x.size(0), dtype=torch.long, device=x.device))
         adj = getattr(data, "weighted_adj_matrix", None)
-        # print("lpe has shape", lpe.shape if lpe is not None else None)
-        # print("adj has shape", adj.shape if adj is not None else None)
-        # print("x_cog has shape", x_cog.shape if x_cog is not None else None)
+        # print("adj shape inside FusionModel.encode:", adj.shape if adj is not None else None)
+
         zs = []
 
-        # Collect branch outputs
         if self.include_gnn:
             if not self.separate_adj_features_instead_of_concat:
                 zs.append(self.gnn(x, edge_index, edge_attr=edge_attr, batch=batch))
             else:
                 x_adj_row = getattr(data, "x_adj_row", None)
                 zs.append(self.gnn(x_adj_row, edge_index, edge_attr=edge_attr, batch=batch))
+
         if self.include_cnn:
             if adj is not None and adj.dim() == 2:
                 adj = adj.unsqueeze(0)
+
+            # If adj is [B, 1, N, N], convert to [B, N, N]
+            if adj is not None and adj.dim() == 4 and adj.size(1) == 1:
+                adj = adj.squeeze(1)
+
             zs.append(self.cnn(adj))
+
         if self.include_mlp:
             from torch_geometric.utils import to_dense_batch
             x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
             x_flat = x_dense.view(x_dense.size(0), -1)
             zs.append(self.mlp(x_flat))
+
         if self.include_transformer:
             from torch_geometric.utils import to_dense_batch
+
             if not self.separate_adj_features_instead_of_concat:
                 x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
-                # keep as [B, num_nodes, node_in_dim]
                 zs.append(self.transformer(x_dense, lpe=lpe))
             else:
                 x_adj_row = getattr(data, "x_adj_row", None)
-                x_adj_row_dense, mask = to_dense_batch(x_adj_row, batch, max_num_nodes=self.num_nodes)
+                x_adj_row_dense, mask = to_dense_batch(
+                    x_adj_row,
+                    batch,
+                    max_num_nodes=self.num_nodes
+                )
                 zs.append(self.transformer(x_adj_row_dense, lpe=lpe))
+
         if self.include_cog_mlp:
-            batch_size = data.num_graphs  # number of graphs in the batch
+            batch_size = data.num_graphs
             feat_dim = data.x_cog.numel() // batch_size
             x_cog = data.x_cog.view(batch_size, feat_dim)
             zs.append(self.cog_branch(x_cog))
-            
-        # Concatenate embeddings 
-        z_concat = torch.cat(zs, dim=-1)  # [B, concat_dim]
 
-        # Classify
+        z_concat = torch.cat(zs, dim=-1)  # [num_graphs, fusion_embedding_dim]
+
+        return z_concat
+
+
+    def forward(self, data):
+        z_concat = self.encode(data)
         logits = self.classifier(z_concat)
         return logits
+
+    # def forward(self, data):
+    #     edge_index, edge_attr = data.edge_index, getattr(data, "edge_attr", None)
+    #     x, x_cog, lpe = data.x, getattr(data, "x_cog", None), getattr(data, "laplacian_pe", None)
+    #     batch = getattr(data, "batch", torch.zeros(x.size(0), dtype=torch.long, device=x.device))
+    #     adj = getattr(data, "weighted_adj_matrix", None)
+    #     # print("lpe has shape", lpe.shape if lpe is not None else None)
+    #     # print("adj has shape", adj.shape if adj is not None else None)
+    #     # print("x_cog has shape", x_cog.shape if x_cog is not None else None)
+    #     zs = []
+
+    #     # Collect branch outputs
+    #     if self.include_gnn:
+    #         if not self.separate_adj_features_instead_of_concat:
+    #             zs.append(self.gnn(x, edge_index, edge_attr=edge_attr, batch=batch))
+    #         else:
+    #             x_adj_row = getattr(data, "x_adj_row", None)
+    #             zs.append(self.gnn(x_adj_row, edge_index, edge_attr=edge_attr, batch=batch))
+    #     if self.include_cnn:
+    #         if adj is not None and adj.dim() == 2:
+    #             adj = adj.unsqueeze(0)
+    #         zs.append(self.cnn(adj))
+    #     if self.include_mlp:
+    #         from torch_geometric.utils import to_dense_batch
+    #         x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
+    #         x_flat = x_dense.view(x_dense.size(0), -1)
+    #         zs.append(self.mlp(x_flat))
+    #     if self.include_transformer:
+    #         from torch_geometric.utils import to_dense_batch
+    #         if not self.separate_adj_features_instead_of_concat:
+    #             x_dense, mask = to_dense_batch(x, batch, max_num_nodes=self.num_nodes)
+    #             # keep as [B, num_nodes, node_in_dim]
+    #             zs.append(self.transformer(x_dense, lpe=lpe))
+    #         else:
+    #             x_adj_row = getattr(data, "x_adj_row", None)
+    #             x_adj_row_dense, mask = to_dense_batch(x_adj_row, batch, max_num_nodes=self.num_nodes)
+    #             zs.append(self.transformer(x_adj_row_dense, lpe=lpe))
+    #     if self.include_cog_mlp:
+    #         batch_size = data.num_graphs  # number of graphs in the batch
+    #         feat_dim = data.x_cog.numel() // batch_size
+    #         x_cog = data.x_cog.view(batch_size, feat_dim)
+    #         zs.append(self.cog_branch(x_cog))
+            
+    #     # Concatenate embeddings 
+    #     z_concat = torch.cat(zs, dim=-1)  # [B, concat_dim]
+
+    #     # Classify
+    #     logits = self.classifier(z_concat)
+    #     return logits
 
 
