@@ -9,7 +9,7 @@ import pandas as pd
 OUTPUT_ROOT = r"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjgnn/5e-5"
 
 # Path for the aggregated summary output
-SUMMARY_PATH = os.path.join(os.path.dirname(OUTPUT_ROOT), "unified_aggregated_summary.csv")
+SUMMARY_PATH = os.path.join(os.path.dirname(OUTPUT_ROOT), "adjgnn_new_summary_5e-5.csv")
 
 
 def read_json(path):
@@ -155,28 +155,81 @@ def extract_best_epoch_metrics(run_dir):
 
 import os
 import pandas as pd
+def add_fixed_epoch_window_average(
+    df,
+    best_epoch,
+    metric="test_f1_weighted",
+    window_size=2,
+):
+    """
+    Around the selected fixed best epoch, compute the average of the metric means
+    over:
 
+        best_epoch - 2
+        best_epoch - 1
+        best_epoch
+        best_epoch + 1
+        best_epoch + 2
+
+    For example, if metric='test_f1_weighted', this uses:
+        test_f1_weighted_mean
+
+    Returns a dictionary with the window epochs and the averaged value.
+    """
+
+    mean_col = f"{metric}_mean"
+
+    if mean_col not in df.columns:
+        print(f"[Warning] '{mean_col}' not found for fixed-epoch window averaging.")
+        return {}
+
+    if "epoch" not in df.columns:
+        print("[Warning] 'epoch' column not found for fixed-epoch window averaging.")
+        return {}
+
+    start_epoch = best_epoch - window_size
+    end_epoch = best_epoch + window_size
+
+    window_df = df[
+        (df["epoch"] >= start_epoch) &
+        (df["epoch"] <= end_epoch)
+    ].copy()
+
+    if window_df.empty:
+        print(
+            f"[Warning] No epochs found in window "
+            f"[{start_epoch}, {end_epoch}] around epoch {best_epoch}."
+        )
+        return {}
+
+    window_epochs = window_df["epoch"].astype(int).tolist()
+    window_avg_value = float(window_df[mean_col].mean())
+
+    return {
+        # f"fixed_epoch_window_{metric}_center_epoch": int(best_epoch),
+        # f"fixed_epoch_window_{metric}_start_epoch": int(min(window_epochs)),
+        # f"fixed_epoch_window_{metric}_end_epoch": int(max(window_epochs)),
+        f"fixed_epoch_window_{metric}_num_epochs_used": int(len(window_epochs)),
+        f"fixed_epoch_window_avg_{metric}_mean": window_avg_value,
+    }
 
 def extract_best_epoch_metrics_5foldcv(
     run_dir,
     selection_metric="test_f1_weighted",
     selection_mode="max",
+    fixed_epoch_window_size=2,
 ):
     """
     For a 5-fold CV run with a precomputed average_epoch_metrics.csv:
     - reads training_logs_plots/average_epoch_metrics.csv
-    - expects columns such as:
-          epoch
-          test_f1_weighted_mean
-          test_f1_weighted_std
-          test_acc_mean
-          test_acc_std
-          ...
-    - picks the best epoch based on <selection_metric>_mean
-    - returns:
-          1) a compact summary dict
-          2) the full selected row as a dict
+    - picks the best fixed/shared epoch based on <selection_metric>_mean
+    - additionally computes the average of <selection_metric>_mean over:
+          best_epoch - 2, best_epoch - 1, best_epoch,
+          best_epoch + 1, best_epoch + 2
+
+    This window value is still based on fixed-epoch averages, not fold-wise maxima.
     """
+
     avg_path = os.path.join(run_dir, "training_logs_plots", "average_epoch_metrics.csv")
 
     if not os.path.exists(avg_path):
@@ -208,16 +261,17 @@ def extract_best_epoch_metrics_5foldcv(
         raise ValueError("selection_mode must be either 'max' or 'min'")
 
     best_row = df.loc[best_idx].to_dict()
+    best_epoch = int(best_row["epoch"])
 
     best_epoch_dict = {
-        "best_epoch": int(best_row["epoch"]),
+        "best_epoch": best_epoch,
         f"best_{selection_mean_col}": float(best_row[selection_mean_col]),
     }
 
     if selection_std_col in best_row and pd.notna(best_row[selection_std_col]):
         best_epoch_dict[f"best_{selection_std_col}"] = float(best_row[selection_std_col])
 
-    # Add a few commonly used metrics if available
+    # Existing fixed-epoch selected metrics
     for metric in ["test_f1_weighted", "test_acc", "test_loss", "val_f1", "val_loss"]:
         mean_col = f"{metric}_mean"
         std_col = f"{metric}_std"
@@ -228,7 +282,82 @@ def extract_best_epoch_metrics_5foldcv(
         if std_col in best_row and pd.notna(best_row[std_col]):
             best_epoch_dict[f"best_{std_col}"] = float(best_row[std_col])
 
+    # New: average of fixed-epoch averages over best_epoch ± 2
+    window_avg_dict = add_fixed_epoch_window_average(
+        df=df,
+        best_epoch=best_epoch,
+        metric=selection_metric,
+        window_size=fixed_epoch_window_size,
+    )
+
+    best_epoch_dict.update(window_avg_dict)
+
     return best_epoch_dict, best_row
+
+def extract_foldwise_max_metric_stats(
+    run_dir,
+    metric="test_f1_weighted",
+):
+    """
+    For each fold separately:
+    - read fold*_epoch_metrics.csv
+    - find the maximum value of `metric` within that fold
+    - save the epoch where that maximum occurred
+    - compute mean/std across the fold-wise maxima
+
+    This is different from selecting one fixed/shared epoch.
+    """
+
+    pattern = os.path.join(run_dir, "training_logs_plots", "fold*_epoch_metrics.csv")
+    fold_paths = sorted(glob.glob(pattern))
+
+    if not fold_paths:
+        print(f"[Warning] No fold*_epoch_metrics.csv files found in {run_dir}")
+        return {}
+
+    fold_best_values = []
+    result = {
+        "num_fold_metric_files_found": len(fold_paths),
+    }
+
+    for i, fold_path in enumerate(fold_paths, start=1):
+        df = pd.read_csv(fold_path)
+
+        if "epoch" not in df.columns:
+            print(f"[Warning] 'epoch' column not found in {fold_path}")
+            continue
+
+        if metric not in df.columns:
+            print(f"[Warning] '{metric}' column not found in {fold_path}")
+            continue
+
+        if df.empty:
+            print(f"[Warning] Empty fold metrics file: {fold_path}")
+            continue
+
+        best_idx = df[metric].idxmax()
+        best_row = df.loc[best_idx]
+
+        best_epoch = int(best_row["epoch"])
+        best_value = float(best_row[metric])
+
+        fold_best_values.append(best_value)
+
+        result[f"fold{i}_best_epoch_for_{metric}"] = best_epoch
+        result[f"fold{i}_max_{metric}"] = best_value
+
+    if not fold_best_values:
+        return result
+
+    fold_best_series = pd.Series(fold_best_values)
+
+    result[f"avg_foldwise_max_{metric}"] = float(fold_best_series.mean())
+
+    # ddof=1 gives sample std, same convention as pandas .std()
+    result[f"std_foldwise_max_{metric}"] = float(fold_best_series.std(ddof=1))
+
+    return result
+
 
 def main():
     """
@@ -254,13 +383,22 @@ def main():
             # expected_num_folds=5,
         )
 
+        foldwise_max_dict = extract_foldwise_max_metric_stats(
+        run_dir,
+        metric="test_f1_weighted",
+        )
+
         print(f"Best epoch metrics: {best_epoch_dict}")
+        print(f"Fold-wise maximum metrics: {foldwise_max_dict}")
 
         summary = {"run_dir": run_dir}
         summary.update(hyperparams)
 
         if best_epoch_dict:
             summary.update(best_epoch_dict)
+
+        if foldwise_max_dict:
+            summary.update(foldwise_max_dict)
 
         if best_row:
             summary.update(best_row)

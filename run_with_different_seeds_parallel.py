@@ -5,118 +5,129 @@ import sys
 
 seeds = [7] #[42, 123, 2021, 7, 99]
 
+import json
+import shlex
+
+
+def json_config_to_cli_string(config, script_path="train.py", include_none=False):
+    """
+    Convert a JSON-style config dict into a command-line string.
+
+    Rules:
+      - bool True  -> --flag
+      - bool False -> omitted
+      - None/null  -> omitted by default
+      - list/tuple -> --arg item1 item2 item3
+      - other      -> --arg value
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary loaded from JSON.
+    script_path : str
+        Python script path to call.
+    include_none : bool
+        If True, converts None values to the string "None".
+        Usually keep this False for argparse.
+
+    Returns
+    -------
+    str
+        Full command string, e.g.:
+        python train.py --epochs 1 --lr 5e-05 --include_transformer
+    """
+
+    parts = ["python", script_path]
+
+    for key, value in config.items():
+        arg_name = f"--{key}"
+
+        # Boolean flags for argparse action="store_true"
+        if isinstance(value, bool):
+            if value:
+                parts.append(arg_name)
+            continue
+
+        # Skip null values unless explicitly requested
+        if value is None:
+            if include_none:
+                parts.extend([arg_name, "None"])
+            continue
+
+        # Expand list values for nargs="+"
+        if isinstance(value, (list, tuple)):
+            parts.append(arg_name)
+            parts.extend(str(v) for v in value)
+            continue
+
+        # Normal scalar values
+        parts.extend([arg_name, str(value)])
+
+    # Quote safely for shell usage
+    return " ".join(shlex.quote(p) for p in parts)
+
+
 print("Starting experiments with different seeds in parallel...")
 
 base_command = [
     # "python",
-    r"C:\dev\GitHub\MIND\mind_env\Scripts\python.exe",
-    # "exp4_main_deterministic.py",
-    "temporal_fusion.py",
+    # r"C:\dev\GitHub\MIND\mind_env\Scripts\python.exe",
+    r"C:\Users\efeka\Documents\thesis_colab_match\Scripts\python.exe",
+    "exp4_main_deterministic.py",
+
     # ADNI
-    "--dataset", "adni",
-    "--dataset_path", "./data/adni/CT_Vol_graphs_complete_features_filtered_negative.pt",
-    "--cross_val_pkl", "./data/adni/splits/reporting_cv_splits.pkl",
+    # "--dataset", "adni",
+    # "--dataset_path", "./data/adni/CT_Vol_graphs_complete_features_filtered_negative.pt",
+    # "--cross_val_pkl", "./data/adni/splits/reporting_cv_splits.pkl",
 
     # OASIS 
-    # "--dataset", "oasis", 
-    # "--dataset_path", "./data/oasis3/CTVOL_all_graphs_relabeled_6m_filtered_negative.pt",
-    # "--cross_val_pkl", "./data/oasis3/splits/oasis_cv_1foldval.pkl",
+    "--dataset", "oasis", 
+    "--dataset_path", "./data/oasis3/CTVOL_all_graphs_relabeled_6m_filtered_negative.pt",
+    "--cross_val_pkl", "./data/oasis3/splits/oasis_cv_1foldval.pkl",
 
-    "--epochs", "5",
+    # Feature settings
+    "--excluded_node_features", "std_min_max",
+    "--node_feature_set", "ct_vol_sa_mc_sd",
+    # "--add_adj_row_as_node_feature", # for adj models
+    # "--separate_adj_features_instead_of_concat", # for adj models
+
+    "--epochs", "2",
     "--lr", "5e-5",
     "--batch_size", "32",
     "--weight_decay", "0.05",
-    "--dropout", "0.2",
+    
 
-    # GNN specific
-    # "--include_gnn",
-    # "--gnn_dropout", "0.2",
-    # "--edge_threshold", "1.0",
-    # "--gnn_num_layers", "1",
-    # "--gnn_use_pre_mlp",
-    # "--gnn_cnn_input_add_flattened_node_features",
-    # "--gnn_add_output_skip",
-    # "--gnn_layer_connectivity", "skipsum",
-    # "--gnn_hidden_dim", "32",
-        # GNN specific
-    # "--include_gnn",
-    # "--gnn_dropout", "0.2",
-    # "--edge_threshold", "1.0",
-    # "--gnn_num_layers", "2",
-    # # "--gnn_use_pre_mlp",
-    # "--gnn_cnn_input_add_flattened_node_features",
-    # "--gnn_add_output_skip",
-    # "--gnn_layer_connectivity", "skipsum",
-    # "--gnn_hidden_dim", "64",
-
-    # "--include_cortex_mlp",
-    # "--cortex_mlp_dropout", "0.4",
-    # "--cortex_mlp_hidden_dim", "64",
-    # "--cortex_mlp_use_residual",
-    # "--cortex_mlp_activation", "leakyrelu",
-    # # "cortex_mlp_use_layernorm": false,
-    # "--cortex_mlp_num_layers", "1",
-    # # "cortex_mlp_hidden_dims" null,
-    # "--cortex_mlp_width_mode", "constant",
+    "--dropout", "0.0",
 
 
-    # Adj cnn pool    
-    # "--include_cnn",
-    # "--adj_cnn_dropout", "0.5",
-    # "--adj_cnn_conv_channels", "32", "256", "512",
-    # "--adj_cnn_kernel_sizes", "3", "3", "3",
-    # "--adj_cnn_strides", "2", "2", "1",
-    # "--adj_cnn_pool_types", "max", "max", "avg",
-    # "--adj_cnn_pool_kernel_sizes", "4", "4", "3",
-    # "--adj_cnn_negative_slope", "0.01",
-    # "--adj_cnn_norm_type", "group",
-    # "--adj_cnn_group_norm_groups", "8",
-    # "--adj_cnn_readout", "gap_gmp",
-
-    # ADj cnn flattened
-    # "--include_cnn",
-    # "--adj_cnn_dropout", "0.5",
-    # "--adj_cnn_conv_channels", "32", "128", "256",
-    # "--adj_cnn_kernel_sizes", "3", "3", "3",
-    # "--adj_cnn_strides", "2", "2", "1",
-    # "--adj_cnn_pool_types", "max", "max", "avg",
-    # "--adj_cnn_pool_kernel_sizes", "4", "4", "3",
-    # "--adj_cnn_negative_slope", "0.01",
-    # "--adj_cnn_norm_type", "group",
-    # "--adj_cnn_group_norm_groups", "8",
-    # "--adj_cnn_readout", "flatten",
-
-    # Cortex Transformer
-    # "--include_transformer",
-    # "--cort_transformer_dropout", "0.4",
-    # "--cortex_transformer_hidden_dim", "128",
-    # "--cortex_transformer_num_layers", "2",
-    # "--cortex_transformer_num_heads", "4",
-    # "--cortex_transformer_cnn_input_add_flattened_node_features",
-    # "--pos_encoding_type", "learnable",
-    # "--cortex_transformer_add_output_skip", # FALSE
-
-    # Cognitive MLP
+    # ----------------------------------------
+    # ------ Cognitive Model Configs ---------
+    # ----------------------------------------
     "--include_cog_mlp",
     "--cog_hidden_dim", "128",
     "--cog_mlp_dropout", "0.0",
     "--cog_mlp_width_mode", "shrink",
     "--cog_mlp_num_layers", "3",
-    # "--cog_mlp_use_residual_to_last", # FALSE
+    # "--cog_mlp_use_residual_to_last", "false",
 
-    # "--early_stopping",
-    # "--es_monitor", "es_f1_weighted",
-    # "--es_mode", "max",
-    # "--es_patience", "20",
-    # "--es_min_delta", "0.0025",
 
-    "--excluded_node_features", "std_min_max",
-    "--node_feature_set", "ct_vol_sa_mc_sd",
+    # ----------------------------------------
+    # ----------------------------------------
+    # ----------------------------------------
 
-    "--add_adj_row_as_node_feature",
-    "--separate_adj_features_instead_of_concat",
+    # ****************************************
+
+    # ----------------------------------------
+    # ------ Early Stopping Configs ---------
+    # ----------------------------------------
+    "--early_stopping",
+    "--es_monitor", "es_f1_weighted",
+    "--es_mode", "max",
+    "--es_patience", "20",
+    "--es_min_delta", "0.0025",
 
 ]
+
 
 
 def stream_output(seed, process):

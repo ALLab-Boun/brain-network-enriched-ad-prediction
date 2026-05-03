@@ -31,6 +31,42 @@ def seed_all(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+def summarize_encoder_outputs(model, loader, device):
+    model.eval()
+    outputs = []
+
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+
+            z = model.encode(data)
+
+            outputs.append(z.detach().cpu())
+
+    Z = torch.cat(outputs, dim=0)
+
+    stats = {
+        "mean": Z.mean().item(),
+        "std": Z.std().item(),
+        "min": Z.min().item(),
+        "max": Z.max().item(),
+        "abs_max": Z.abs().max().item(),
+        "nan": torch.isnan(Z).any().item(),
+        "inf": torch.isinf(Z).any().item(),
+    }
+
+    return stats
+def append_encoder_stats_to_txt(out_path, fold, epoch, split_name, stats):
+    with open(out_path, "a") as f:
+        f.write(f"Fold {fold} | Epoch {epoch} | Split: {split_name}\n")
+        f.write(f"mean: {stats['mean']:.6f}\n")
+        f.write(f"std: {stats['std']:.6f}\n")
+        f.write(f"min: {stats['min']:.6f}\n")
+        f.write(f"max: {stats['max']:.6f}\n")
+        f.write(f"abs max: {stats['abs_max']:.6f}\n")
+        f.write(f"nan: {stats['nan']}\n")
+        f.write(f"inf: {stats['inf']}\n")
+        f.write("-" * 60 + "\n")
 # Main
 def main(args, seed):
     torch.manual_seed(seed)
@@ -92,6 +128,51 @@ def main(args, seed):
     splits = general.read_cross_val(CROSS_VAL_PKL_PATH)
     print(f"Loaded {len(splits)} cross-validation splits.")
 
+
+    current_conv_visit_map = {}
+
+    if args.dataset == "adni":
+        conv_df = pd.read_excel("./data/adni_dataset_labels.xlsx")
+
+        required_cols = ["PTID", "VISCODE", "CURRENT_IS_CONV_VISIT"]
+        missing_cols = [c for c in required_cols if c not in conv_df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing columns in conversion Excel: {missing_cols}")
+
+        conv_df["PTID"] = conv_df["PTID"].astype(str).str.strip()
+        conv_df["VISCODE"] = conv_df["VISCODE"].astype(str).str.strip()
+        conv_df["CURRENT_IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"].fillna(0).astype(int)
+
+        current_conv_visit_map = {
+            (row.PTID, row.VISCODE): int(row.CURRENT_IS_CONV_VISIT)
+            for row in conv_df.itertuples(index=False)
+        }
+
+        print(
+            "Loaded CURRENT_IS_CONV_VISIT labels:",
+            sum(current_conv_visit_map.values()),
+            "conversion visits out of",
+            len(current_conv_visit_map),
+            "rows"
+        )
+    if args.dataset == "adni" :
+        missing_pairs = []
+
+        for data in data_list:
+            ptid = str(data.ptid).strip()
+            viscode = str(data.viscode).strip()
+
+            flag = current_conv_visit_map.get((ptid, viscode), 0)
+
+            # Store as tensor so PyG Batch can collate it cleanly
+            data.current_is_conv_visit = torch.tensor(flag, dtype=torch.long)
+
+            if (ptid, viscode) not in current_conv_visit_map:
+                missing_pairs.append((ptid, viscode))
+
+        print(f"Pairs not found in conversion Excel: {len(missing_pairs)}")
+
+        
     # Filter data_list to only include samples in the CV splits
     # used_filenames = get_used_filenames_from_splits(splits, include_val_in_train=True)
     # data_list = filter_data_list_by_splits(data_list, used_filenames, dataset=args.dataset)
@@ -121,10 +202,12 @@ def main(args, seed):
 
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.run_dir is not None:
-        results_dir = args.run_dir
+        results_dir = args.run_dir + f"/{now}_seed{args.seed}"
     else:
         results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/{now+str(args.seed)}_fusion_model"
     os.makedirs(results_dir, exist_ok=True)
+
+    # encoder_stats_path = os.path.join(results_dir, "encoder_representation_stats.txt")
 
     all_prediction_records = []
     observe.print_cv_class_distributions(
@@ -175,6 +258,32 @@ def main(args, seed):
                 early_stopping_files = split["val_files"] 
                 early_stopping_data = [copy.deepcopy(filename_to_data[f]) for f in early_stopping_files if f in filename_to_data]
                 print(f"Early stopping size: {len(early_stopping_data)}")
+
+        # # Check that there are no subject overlaps between train, test, and early stopping sets
+        # train_subjects = set(f.split('_')[0] for f in train_files if f in filename_to_data)
+        # test_subjects = set(f.split('_')[0] for f in test_files if f in filename_to_data)
+        # early_stopping_subjects = set(f.split('_')[0] for f in early_stopping_files if f in filename_to_data) if use_es else set()
+        # print(f"Unique train subjects: {len(train_subjects)}")
+        # print(f"Unique test subjects: {len(test_subjects)}")
+        # if use_es:
+        #     print(f"Unique early stopping subjects: {len(early_stopping_subjects)}")    
+
+        # overlap_train_test = train_subjects.intersection(test_subjects)
+        # if len(overlap_train_test) > 0:
+        #     print(f"WARNING: Overlap between train and test sets! Subjects: {overlap_train_test}")
+            
+        # if use_es:
+        #     overlap_train_es = train_subjects.intersection(early_stopping_subjects)
+        #     if len(overlap_train_es) > 0:
+        #         print(f"WARNING: Overlap between train and early stopping sets! Subjects: {overlap_train_es}")
+        #     else:
+        #         print("No overlap between train and early stopping sets.")
+                
+        #     overlap_test_es = test_subjects.intersection(early_stopping_subjects)
+        #     if len(overlap_test_es) > 0:
+        #         print(f"WARNING: Overlap between test and early stopping sets! Subjects: {overlap_test_es}")
+        #     else:
+        #         print("No overlap between test and early stopping sets.")
 
         # set seed for determinism
         fold_seed = args.seed + fold
@@ -422,6 +531,26 @@ def main(args, seed):
             msg += f" | ES {monitor}={init_current:.4f} (best={best_score:.4f} @ {best_epoch})"
         print(msg)
 
+
+        # train_enc_stats = summarize_encoder_outputs(model, observation_train_loader, device)
+        # test_enc_stats = summarize_encoder_outputs(model, test_loader, device)
+
+        # append_encoder_stats_to_txt(
+        #     encoder_stats_path,
+        #     fold=fold + 1,
+        #     epoch=0,
+        #     split_name="train",
+        #     stats=train_enc_stats,
+        # )
+
+        # append_encoder_stats_to_txt(
+        #     encoder_stats_path,
+        #     fold=fold + 1,
+        #     epoch=0,
+        #     split_name="test",
+        #     stats=test_enc_stats,
+        # )
+
         for epoch in range(1, args.epochs + 1):
             tr_loss = general.train_one_epoch(model, train_loader, optimizer, device, criterion=criterion)
 
@@ -496,6 +625,25 @@ def main(args, seed):
                 "es_conv_recall": es_conv_recall,
             })
 
+            # train_enc_stats = summarize_encoder_outputs(model, observation_train_loader, device)
+            # test_enc_stats = summarize_encoder_outputs(model, test_loader, device)
+
+            # append_encoder_stats_to_txt(
+            #     encoder_stats_path,
+            #     fold=fold + 1,
+            #     epoch=epoch,
+            #     split_name="train",
+            #     stats=train_enc_stats,
+            # )
+
+            # append_encoder_stats_to_txt(
+            #     encoder_stats_path,
+            #     fold=fold + 1,
+            #     epoch=epoch,
+            #     split_name="test",
+            #     stats=test_enc_stats,
+            # )
+
             if use_es and bad_epochs >= patience:
                 print(f"Early stopping at epoch {epoch} (best {monitor}={best_score:.4f} at epoch {best_epoch}).")
                 break
@@ -503,8 +651,13 @@ def main(args, seed):
         if use_es and best_state is not None:
             model.load_state_dict(best_state)
         else:
-            # if early stopping enabled but never improved, you might still want to load best_ckpt_path if it exists
             pass
+            
+        # Save the model weights for this fold
+        model_save_path = os.path.join(results_dir, f"fold{fold+1}_model_weights.pt")
+        torch.save(model.state_dict(), model_save_path)
+        print(f"Saved fold {fold+1} model weights to {model_save_path}")
+
         all_train_losses.append(fold_train_losses)
         all_test_losses.append(fold_test_losses)
         all_epoch_metrics.append(epoch_metrics)
@@ -794,9 +947,9 @@ if __name__ == "__main__":
     parser.add_argument("--cog_mlp_num_layers", type=int, default=2)
     parser.add_argument("--cog_mlp_use_residual_to_last", action="store_true")
 
-    # positional encoding
+    # positional encoding (used in transformer branch, and optionally can be added to GNN node features as well if adapted)
     parser.add_argument("--add_laplacian_pe", action="store_true")
-    parser.add_argument("--pos_encoding_type", type=str, choices=["none", "sinusoidal", "learnable", "lpe"], default="sinusoidal")
+    parser.add_argument("--pos_encoding_type", type=str, choices=["none", "sinusoidal", "learnable", "lpe"], default="learnable")
     parser.add_argument("--lpe_dim", type=int, default=8)
 
     # other model configs and hyperparams

@@ -194,139 +194,7 @@ def temporal_collate_fn_pyg_many_to_many(batch, pad_label=-100):
         "status_seq": status_seq,
     }
 
-import torch
-import torch.nn as nn
-from torch_geometric.data import Batch
 
-
-class FusionLSTMManyToMany(nn.Module):
-    def __init__(
-        self,
-        fusion_encoder,
-        hidden_dim=256,
-        num_layers=1,
-        num_classes=2,
-        lstm_dropout=0.0,
-        bidirectional=False,
-        classifier_dropout=0.2,
-        freeze_fusion_encoder=False,
-    ):
-        super().__init__()
-
-        self.fusion_encoder = fusion_encoder
-        self.freeze_fusion_encoder = freeze_fusion_encoder
-
-        if not hasattr(fusion_encoder, "concat_dim"):
-            raise ValueError(
-                "FusionModel must have self.concat_dim. "
-                "Add self.concat_dim = concat_dim inside FusionModel.__init__."
-            )
-
-        self.encoder_out_dim = fusion_encoder.concat_dim
-
-        self.num_directions = 2 if bidirectional else 1
-
-        self.lstm = nn.LSTM(
-            input_size=self.encoder_out_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=lstm_dropout if num_layers > 1 else 0.0,
-            bidirectional=bidirectional,
-        )
-
-        classifier_in_dim = hidden_dim * self.num_directions
-
-        self.classifier_dropout = nn.Dropout(classifier_dropout)
-        self.classifier = nn.Linear(classifier_in_dim, num_classes)
-
-        if freeze_fusion_encoder:
-            for p in self.fusion_encoder.parameters():
-                p.requires_grad = False
-
-    def forward(self, data_seqs, lengths):
-        """
-        data_seqs:
-            list of length B.
-            Each item is a list of PyG Data objects for one subject.
-
-        lengths:
-            Tensor [B]
-
-        Returns:
-            logits: [B, T_max, num_classes]
-        """
-        device = next(self.parameters()).device
-
-        B = len(data_seqs)
-        T_max = int(lengths.max().item())
-
-        # ---------------------------------------------------------
-        # Flatten all valid visits across the batch
-        # ---------------------------------------------------------
-        flat_visits = []
-        positions = []
-
-        for i, seq in enumerate(data_seqs):
-            for t, data in enumerate(seq):
-                flat_visits.append(data)
-                positions.append((i, t))
-
-        if len(flat_visits) == 0:
-            raise ValueError("Received an empty temporal batch.")
-
-        pyg_batch = Batch.from_data_list(flat_visits).to(device)
-
-        # ---------------------------------------------------------
-        # Encode each visit using your existing FusionModel
-        # ---------------------------------------------------------
-        if self.freeze_fusion_encoder:
-            with torch.no_grad():
-                flat_embeddings = self.fusion_encoder.encode(pyg_batch)
-        else:
-            flat_embeddings = self.fusion_encoder.encode(pyg_batch)
-
-        # flat_embeddings: [num_valid_visits, fusion_dim]
-
-        fusion_dim = flat_embeddings.size(-1)
-
-        # ---------------------------------------------------------
-        # Restore padded temporal tensor: [B, T_max, fusion_dim]
-        # ---------------------------------------------------------
-        x_encoded = torch.zeros(
-            B,
-            T_max,
-            fusion_dim,
-            device=device,
-            dtype=flat_embeddings.dtype,
-        )
-
-        for idx, (i, t) in enumerate(positions):
-            x_encoded[i, t] = flat_embeddings[idx]
-
-        # ---------------------------------------------------------
-        # LSTM over visit embeddings
-        # ---------------------------------------------------------
-        packed = nn.utils.rnn.pack_padded_sequence(
-            x_encoded,
-            lengths.cpu(),
-            batch_first=True,
-            enforce_sorted=False,
-        )
-
-        packed_out, _ = self.lstm(packed)
-
-        out_padded, _ = nn.utils.rnn.pad_packed_sequence(
-            packed_out,
-            batch_first=True,
-            total_length=T_max,
-        )
-
-        out_padded = self.classifier_dropout(out_padded)
-
-        logits = self.classifier(out_padded)  # [B, T_max, num_classes]
-
-        return logits
 
 import torch
 import torch.nn as nn
@@ -337,7 +205,7 @@ class FusionRecurrentManyToMany(nn.Module):
     def __init__(
         self,
         fusion_encoder,
-        temporal_type="lstm",   # "rnn", "gru", or "lstm"
+        temporal_type="lstm",   # "rnn", "gru", "lstm", or "transformer"
         hidden_dim=256,
         num_layers=1,
         num_classes=2,
@@ -345,12 +213,24 @@ class FusionRecurrentManyToMany(nn.Module):
         classifier_dropout=0.2,
         freeze_fusion_encoder=False,
         rnn_nonlinearity="tanh",  # only used when temporal_type="rnn"
+
+        # Transformer-specific options
+        transformer_nhead=4,
+        transformer_dim_feedforward=None,
+        transformer_activation="gelu",
+        transformer_causal_mask=False,
+        use_positional_embedding=True,
+        max_seq_len=32,
     ):
         super().__init__()
 
         self.fusion_encoder = fusion_encoder
         self.freeze_fusion_encoder = freeze_fusion_encoder
         self.temporal_type = temporal_type.lower()
+
+        self.transformer_causal_mask = transformer_causal_mask
+        self.use_positional_embedding = use_positional_embedding
+        self.max_seq_len = max_seq_len
 
         if not hasattr(fusion_encoder, "concat_dim"):
             raise ValueError(
@@ -360,7 +240,10 @@ class FusionRecurrentManyToMany(nn.Module):
 
         self.encoder_out_dim = fusion_encoder.concat_dim
 
-        recurrent_dropout = recurrent_dropout if num_layers > 1 else 0.0
+        # Dropout applied directly to encoded visit embeddings
+        self.pre_recurrent = nn.Dropout(recurrent_dropout)
+
+        internal_recurrent_dropout = recurrent_dropout if num_layers > 1 else 0.0
 
         if self.temporal_type == "lstm":
             self.temporal = nn.LSTM(
@@ -368,9 +251,11 @@ class FusionRecurrentManyToMany(nn.Module):
                 hidden_size=hidden_dim,
                 num_layers=num_layers,
                 batch_first=True,
-                dropout=recurrent_dropout,
+                dropout=internal_recurrent_dropout,
                 bidirectional=False,
             )
+
+            self.temporal_out_dim = hidden_dim
 
         elif self.temporal_type == "gru":
             self.temporal = nn.GRU(
@@ -378,9 +263,11 @@ class FusionRecurrentManyToMany(nn.Module):
                 hidden_size=hidden_dim,
                 num_layers=num_layers,
                 batch_first=True,
-                dropout=recurrent_dropout,
+                dropout=internal_recurrent_dropout,
                 bidirectional=False,
             )
+
+            self.temporal_out_dim = hidden_dim
 
         elif self.temporal_type == "rnn":
             self.temporal = nn.RNN(
@@ -388,23 +275,86 @@ class FusionRecurrentManyToMany(nn.Module):
                 hidden_size=hidden_dim,
                 num_layers=num_layers,
                 batch_first=True,
-                dropout=recurrent_dropout,
+                dropout=internal_recurrent_dropout,
                 bidirectional=False,
                 nonlinearity=rnn_nonlinearity,
             )
 
+            self.temporal_out_dim = hidden_dim
+
+        elif self.temporal_type == "transformer":
+            if self.encoder_out_dim % transformer_nhead != 0:
+                raise ValueError(
+                    f"encoder_out_dim={self.encoder_out_dim} must be divisible by "
+                    f"transformer_nhead={transformer_nhead}."
+                )
+
+            if transformer_dim_feedforward is None:
+                transformer_dim_feedforward = 4 * self.encoder_out_dim
+
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.encoder_out_dim,
+                nhead=transformer_nhead,
+                dim_feedforward=transformer_dim_feedforward,
+                dropout=recurrent_dropout,
+                activation=transformer_activation,
+                batch_first=True,
+                norm_first=True,
+            )
+
+            self.temporal = nn.TransformerEncoder(
+                encoder_layer=encoder_layer,
+                num_layers=num_layers,
+            )
+
+            if use_positional_embedding:
+                self.positional_embedding = nn.Embedding(
+                    max_seq_len,
+                    self.encoder_out_dim,
+                )
+            else:
+                self.positional_embedding = None
+
+            self.temporal_out_dim = self.encoder_out_dim
+
         else:
             raise ValueError(
                 f"Unknown temporal_type={temporal_type}. "
-                "Expected one of: 'rnn', 'gru', 'lstm'."
+                "Expected one of: 'rnn', 'gru', 'lstm', 'transformer'."
             )
 
         self.classifier_dropout = nn.Dropout(classifier_dropout)
-        self.classifier = nn.Linear(hidden_dim, num_classes)
+        self.classifier = nn.Linear(self.temporal_out_dim, num_classes)
 
         if freeze_fusion_encoder:
             for p in self.fusion_encoder.parameters():
                 p.requires_grad = False
+
+    def _make_transformer_attention_mask(self, T, device):
+        """
+        Returns attention mask of shape [T, T].
+
+        In PyTorch TransformerEncoder:
+            mask[q, k] = True means query position q CANNOT attend to key position k.
+
+        Causal next_to_previous mask:
+            Later visits can attend to previous visits.
+            Earlier visits cannot attend to later visits.
+
+        Allowed:
+            t=0 -> 0
+            t=1 -> 0,1
+            t=2 -> 0,1,2
+            t=3 -> 0,1,2,3
+
+        Mask:
+            upper triangular part above diagonal is True.
+        """
+
+        return torch.triu(
+            torch.ones(T, T, dtype=torch.bool, device=device),
+            diagonal=1
+        )
 
     def forward(self, data_seqs, lengths):
         """
@@ -471,29 +421,68 @@ class FusionRecurrentManyToMany(nn.Module):
             x_encoded[i, t] = flat_embeddings[idx]
 
         # ---------------------------------------------------------
-        # Recurrent temporal module over visit embeddings
+        # Dropout before temporal module
         # ---------------------------------------------------------
-        packed = nn.utils.rnn.pack_padded_sequence(
-            x_encoded,
-            lengths.cpu(),
-            batch_first=True,
-            enforce_sorted=False,
-        )
+        x_encoded = self.pre_recurrent(x_encoded)
 
-        packed_out, _ = self.temporal(packed)
+        # ---------------------------------------------------------
+        # Temporal module over visit embeddings
+        # ---------------------------------------------------------
+        if self.temporal_type == "transformer":
+            if self.use_positional_embedding:
+                if T_max > self.max_seq_len:
+                    raise ValueError(
+                        f"T_max={T_max} is larger than max_seq_len={self.max_seq_len}. "
+                        "Increase max_seq_len."
+                    )
 
-        out_padded, _ = nn.utils.rnn.pad_packed_sequence(
-            packed_out,
-            batch_first=True,
-            total_length=T_max,
-        )
+                pos = torch.arange(T_max, device=device)
+                pos_emb = self.positional_embedding(pos)  # [T_max, fusion_dim]
+                x_encoded = x_encoded + pos_emb.unsqueeze(0)
 
+            # key_padding_mask:
+            # True means this position is padding and should be ignored.
+            time_ids = torch.arange(T_max, device=device).unsqueeze(0)  # [1, T_max]
+            key_padding_mask = time_ids >= lengths.unsqueeze(1)         # [B, T_max]
+
+            if self.transformer_causal_mask:
+                attn_mask = self._make_transformer_attention_mask(
+                    T=T_max,
+                    device=device,
+                )
+            else:
+                attn_mask = None
+
+            out_padded = self.temporal(
+                x_encoded,
+                mask=attn_mask,
+                src_key_padding_mask=key_padding_mask,
+            )
+
+        else:
+            packed = nn.utils.rnn.pack_padded_sequence(
+                x_encoded,
+                lengths.cpu(),
+                batch_first=True,
+                enforce_sorted=False,
+            )
+
+            packed_out, _ = self.temporal(packed)
+
+            out_padded, _ = nn.utils.rnn.pad_packed_sequence(
+                packed_out,
+                batch_first=True,
+                total_length=T_max,
+            )
+
+        # ---------------------------------------------------------
+        # Classification
+        # ---------------------------------------------------------
         out_padded = self.classifier_dropout(out_padded)
 
         logits = self.classifier(out_padded)  # [B, T_max, num_classes]
 
         return logits
-
 # -------------------------------------------------------------------
 # TRAIN / EVAL / PREDICT
 # -------------------------------------------------------------------
@@ -638,7 +627,93 @@ def predict_temporal_many_to_many(model, loader, device):
 
     return records
 
+def load_pretrained_encoder(
+    fusion_encoder,
+    checkpoint_path,
+    device,
+    key_prefix_to_strip=None,
+    strict=False,
+):
+    """
+    Load pretrained weights into the FusionModel encoder.
 
+    Supports checkpoints saved as:
+      1) raw state_dict
+      2) {"state_dict": state_dict}
+      3) {"model_state_dict": state_dict}
+      4) full temporal model state_dict with keys like "fusion_encoder.xxx"
+
+    Parameters
+    ----------
+    fusion_encoder : nn.Module
+        The FusionModel instance.
+    checkpoint_path : str
+        Path to .pt/.pth checkpoint.
+    device : torch.device
+        Device used for map_location.
+    key_prefix_to_strip : str or None
+        Prefix to remove from checkpoint keys before loading.
+        Example: "fusion_encoder."
+    strict : bool
+        Whether to require exact key match.
+    """
+
+    if checkpoint_path is None:
+        return
+
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Pretrained encoder checkpoint not found: {checkpoint_path}")
+
+    print(f"Loading pretrained encoder from: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    if isinstance(checkpoint, dict):
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+    else:
+        raise ValueError(
+            "Unsupported checkpoint format. Expected a state_dict or a dict containing "
+            "'state_dict' or 'model_state_dict'."
+        )
+
+    cleaned_state_dict = {}
+
+    for k, v in state_dict.items():
+        new_k = k
+
+        # Common case when saved with DataParallel
+        if new_k.startswith("module."):
+            new_k = new_k[len("module."):]
+
+        # Optional user-provided prefix stripping
+        if key_prefix_to_strip is not None and new_k.startswith(key_prefix_to_strip):
+            new_k = new_k[len(key_prefix_to_strip):]
+
+        cleaned_state_dict[new_k] = v
+
+    # If checkpoint is from the full temporal model and user did not specify prefix,
+    # automatically keep only fusion_encoder.* keys.
+    if key_prefix_to_strip is None:
+        fusion_only = {}
+
+        for k, v in cleaned_state_dict.items():
+            if k.startswith("fusion_encoder."):
+                fusion_only[k[len("fusion_encoder."):]] = v
+
+        if len(fusion_only) > 0:
+            print("Detected full temporal model checkpoint. Loading only fusion_encoder.* weights.")
+            cleaned_state_dict = fusion_only
+
+    incompatible = fusion_encoder.load_state_dict(cleaned_state_dict, strict=strict)
+
+    print("Pretrained encoder loading complete.")
+    print("Missing keys:", incompatible.missing_keys)
+    print("Unexpected keys:", incompatible.unexpected_keys)
 # -------------------------------------------------------------------
 # MAIN
 # -------------------------------------------------------------------
@@ -739,7 +814,7 @@ def main(args, seed):
 
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.run_dir is not None:
-        results_dir = args.run_dir
+        results_dir = args.run_dir + f"/{now}_seed{args.seed}"
     else:
         results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/{now+str(args.seed)}_temporal_many_to_many"
 
@@ -878,7 +953,7 @@ def main(args, seed):
             generator=g,
             num_workers=0,
             collate_fn=temporal_collate_fn_pyg_many_to_many,
-            drop_last=False,
+            drop_last=True, # ???
         )
 
         observation_train_loader = DataLoader(
@@ -993,15 +1068,23 @@ def main(args, seed):
             dropout=args.dropout,
             separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
         )
+        load_pretrained_encoder(
+            fusion_encoder=fusion_encoder,
+            checkpoint_path=args.pretrained_encoder_path + f"/fold{fold+1}_model_weights.pt",
+            device=device,
+            key_prefix_to_strip=args.pretrained_encoder_key_prefix,
+            strict=args.strict_pretrained_encoder,
+        )
         model = FusionRecurrentManyToMany(
             fusion_encoder=fusion_encoder,
             temporal_type=args.temporal_type,
-            hidden_dim=128,
+            hidden_dim=args.temporal_hidden_dim,
             num_layers=1,
             num_classes=2,
-            recurrent_dropout=0.0,
+            recurrent_dropout=args.dropout,
             classifier_dropout=args.dropout,
             rnn_nonlinearity="tanh",
+            transformer_causal_mask=True
         ).to(device)
         print(model)
 
@@ -1309,6 +1392,23 @@ if __name__ == "__main__":
     # Temporal settings
     parser.add_argument("--temporal_type", type=str, choices=["rnn", "lstm", "gru"], default="rnn")
     parser.add_argument("--dropout", type=float, default=0.5) # dropout for temporal classifier
+    parser.add_argument("--temporal_hidden_dim", type=int, default=128)
+    # Pretrained encoder loading
+    parser.add_argument("--pretrained_encoder_path", type=str, default=None)
+    parser.add_argument(
+        "--pretrained_encoder_key_prefix",
+        type=str,
+        default=None,
+        help=(
+            "Optional prefix to strip from checkpoint keys. "
+            "Examples: 'fusion_encoder.', 'module.fusion_encoder.'"
+        )
+    )
+    parser.add_argument(
+        "--strict_pretrained_encoder",
+        action="store_true",
+        help="Use strict=True when loading pretrained encoder weights."
+    )
 
     # GNN
     parser.add_argument("--gnn_dropout", type=float, default=0.5)
@@ -1364,9 +1464,9 @@ if __name__ == "__main__":
     parser.add_argument("--cog_mlp_num_layers", type=int, default=2)
     parser.add_argument("--cog_mlp_use_residual_to_last", action="store_true")
 
-    # positional encoding
+    # positional encoding(used in transformer branch, and optionally can be added to GNN node features as well if adapted)
     parser.add_argument("--add_laplacian_pe", action="store_true")
-    parser.add_argument("--pos_encoding_type", type=str, choices=["none", "sinusoidal", "learnable", "lpe"], default="sinusoidal")
+    parser.add_argument("--pos_encoding_type", type=str, choices=["none", "sinusoidal", "learnable", "lpe"], default="learnable")
     parser.add_argument("--lpe_dim", type=int, default=8)
 
     # other model configs and hyperparams

@@ -13,13 +13,29 @@ from pathlib import Path
 # =========================================================
 # Config
 # =========================================================
+# BASE_CMD = [
+#     r"C:\dev\GitHub\MIND\mind_env\Scripts\python.exe",
+#     # "exp4_main_deterministic.py", # for cross sectional models
+# ]
+
 BASE_CMD = [
     r"C:\dev\GitHub\MIND\mind_env\Scripts\python.exe",
-    "exp4_main_deterministic.py",
+    "exp4_temporal.py", # for temporal models
+    "--include_gnn",
+    "--gnn_dropout", "0.2",
+    "--gnn_hidden_dim", "64",
+    "--edge_threshold", "1.0",
+    "--gnn_num_layers", "1",
+    "--gnn_layer", "gcn",
+    "--gnn_use_pre_mlp",
+    "--gnn_cnn_input_add_flattened_node_features",
+    "--gnn_add_output_skip",
+    "--gnn_layer_connectivity", "skipsum",
+    "--gnn_norm_type", "layernorm",
+    "--gnn_readout", "cnn",
 ]
 
-BASE_FOLDER = "./cv_tuning_val_974_split"
-OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/tuning_stratified/adjgnn/_5e-5"
+OUTPUT_ROOT = "./drive/MyDrive/thesis_gnn_results/mind_graph_exps/temporal_current_visit_tuning/morph_mlp"
 DATASET_PATH = "./data/adni/CT_Vol_graphs_complete_features_filtered_negative.pt"
 CROSS_VAL_PKL_PATH = "./data/adni/splits/tuning_cv_splits.pkl"
 
@@ -206,71 +222,136 @@ GPU_IDS = None
 # }
 
 
+# # # -----------------------------
+# # # GNN param grid adjacency
+# # # -----------------------------
+# param_grid = {
+#     "include_gnn": [True],
+
+#     "lr": [ 5e-5],
+#     "batch_size": [64],
+#     "epochs": [150],
+#     "dropout": [0.2, 0.4],
+
+#     # architecture
+#     "gnn_hidden_dim": [256, 128, 64],
+#     "gnn_num_layers": [2, 1],
+#     "gnn_layer": ["gcn"],
+#     "gnn_layer_connectivity": ["skipsum"],
+
+#     # regularization
+#     "gnn_dropout": [0.2, 0.4],
+#     # "gnn_norm_type": ["layernorm", "graphnorm"],
+
+#     # graph preprocessing
+#     "edge_threshold": [1.0],
+
+#     # # feature augmentations
+#     "add_adj_row_as_node_feature": [True],
+#     "separate_adj_features_instead_of_concat": [True],
+
+#     # model options
+#     "gnn_use_pre_mlp": [True],
+#     "gnn_cnn_input_add_flattened_node_features": [True],
+#     "gnn_add_output_skip": [True],
+# }
+
 # # -----------------------------
-# # GNN param grid adjacency
-# # -----------------------------
-param_grid = {
-    "include_gnn": [True],
+# # # Adj Cortex Transformer param grid
+# # # -----------------------------
+# param_grid = {
+#     "include_transformer": [True],
 
-    "lr": [ 5e-5],
-    "batch_size": [64],
-    "epochs": [150],
-    "dropout": [0.2, 0.4],
+#     # Fundamental training params
+#     "lr": [5e-5, 5e-4],
+#     "batch_size": [64],
+#     "epochs": [90],
+#     "dropout": [0.4],
 
-    # architecture
-    "gnn_hidden_dim": [256, 128, 64],
-    "gnn_num_layers": [2, 1],
-    "gnn_layer": ["gcn"],
-    "gnn_layer_connectivity": ["skipsum"],
-
-    # regularization
-    "gnn_dropout": [0.2, 0.4],
-    # "gnn_norm_type": ["layernorm", "graphnorm"],
-
-    # graph preprocessing
-    "edge_threshold": [1.0],
-
-    # # feature augmentations
-    "add_adj_row_as_node_feature": [True],
-    "separate_adj_features_instead_of_concat": [True],
-
-    # model options
-    "gnn_use_pre_mlp": [True],
-    "gnn_cnn_input_add_flattened_node_features": [True],
-    "gnn_add_output_skip": [True],
-}
-
-# -----------------------------
-# # Adj Cortex Transformer param grid
-# # -----------------------------
-param_grid = {
-    "include_transformer": [True],
-
-    # Fundamental training params
-    "lr": [5e-5, 5e-4],
-    "batch_size": [64],
-    "epochs": [90],
-    "dropout": [0.4],
-
-    # Architecture Capacity
-    "cortex_transformer_hidden_dim": [64,128,256],
-    "cortex_transformer_num_layers": [1,2],
-    "cortex_transformer_num_heads": [1,4,8],
+#     # Architecture Capacity
+#     "cortex_transformer_hidden_dim": [64,128,256],
+#     "cortex_transformer_num_layers": [1,2],
+#     "cortex_transformer_num_heads": [1,4,8],
     
-    # Regularization
-    "cort_transformer_dropout": [0.4],
+#     # Regularization
+#     "cort_transformer_dropout": [0.4],
+#     "weight_decay": [5e-2],
+
+#     # Positional Encoding
+#     "pos_encoding_type": [ "none", "learnable"],
+
+#     "add_laplacian_pe": [True],
+#     "add_adj_row_as_node_feature": [ True],
+#     "separate_adj_features_instead_of_concat": [True],
+#     # Connectivity & Feature aug
+#     "cortex_transformer_cnn_input_add_flattened_node_features": [True],
+#     "cortex_transformer_add_output_skip": [ True, False],
+# }
+
+
+# # -----------------------------
+# # Temporal Morphometric MLP param grid
+# # -----------------------------
+param_grid = {
+    "dropout": [0.1,0.2, 0.3, 0.4 ], #
+    "temporal_type": ["rnn", "gru","lstm"],
+    "temporal_hidden_dim": [64, 128, 256],
+    "lr": [5e-5, 5e-4],
+    "batch_size": [32, 64],
+    "epochs": [1],
+    "include_cortex_mlp": [True],
+    "cortex_mlp_dropout": [0.4],
+    "cortex_mlp_hidden_dim": [64],
+    "cortex_mlp_use_residual": [True],
+    "cortex_mlp_activation": ["leakyrelu"],
+    "cortex_mlp_use_layernorm": [False],
+    "cortex_mlp_num_layers": [1],
+
     "weight_decay": [5e-2],
-
-    # Positional Encoding
-    "pos_encoding_type": [ "none", "learnable"],
-
-    "add_laplacian_pe": [True],
-    "add_adj_row_as_node_feature": [ True],
-    "separate_adj_features_instead_of_concat": [True],
-    # Connectivity & Feature aug
-    "cortex_transformer_cnn_input_add_flattened_node_features": [True],
-    "cortex_transformer_add_output_skip": [ True, False],
 }
+
+# # -----------------------------
+# # Temporal Morphometric GNN param grid
+# # -----------------------------
+param_grid = {
+    "dropout": [0.4 ], #
+    "temporal_type": ["rnn", "gru","lstm"],
+    "temporal_hidden_dim": [64],
+    "lr": [5e-5, 5e-4],
+    "batch_size": [32, 64],
+    "epochs": [100],
+
+    # "include_gnn": [True],
+    # "gnn_hidden_dim": [64],
+    # "gnn_num_layers": [1],
+    # "gnn_layer": ["gcn"],
+    # "gnn_layer_connectivity": [ "skipsum"],
+    # "gnn_dropout": [ 0.2 ],
+    # "gnn_norm_type": ["layernorm"],
+    # "edge_threshold": [1.0],
+    # "gnn_use_pre_mlp": [True],
+    # "gnn_cnn_input_add_flattened_node_features": [True],
+    # "gnn_add_output_skip": [True],
+    # "gnn_readout": ["cnn"],
+
+    "weight_decay": [5e-2],
+}
+
+# # -----------------------------
+# # Temporal param grid
+# # -----------------------------
+param_grid = {
+    "dropout": [0.4, 0.3, 0.2, 0.1], #
+    "temporal_type": ["rnn", "gru","lstm"],
+    "temporal_hidden_dim": [64, 128, 256],
+    "lr": [5e-5, 5e-4],
+    "batch_size": [64, 32],
+    "epochs": [75],
+
+    "weight_decay": [5e-2],
+}
+
+#
 # # =========================================================
 # Helpers for robust param matching
 # =========================================================
@@ -343,7 +424,6 @@ def build_existing_run_index(output_root, tuned_keys):
 def make_cmd(params, run_dir):
     cmd = BASE_CMD.copy()
 
-    cmd.append(f"--base_folder={BASE_FOLDER}")
     cmd.append(f"--dataset_path={DATASET_PATH}")
     cmd.append(f"--cross_val_pkl={CROSS_VAL_PKL_PATH}")
     cmd.append(f"--run_dir={run_dir}")

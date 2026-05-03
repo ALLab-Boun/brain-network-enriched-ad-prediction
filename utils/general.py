@@ -400,12 +400,18 @@ def evaluate(model, loader, device, criterion=None):
         y_true.extend(data.y.cpu().tolist())
         y_pred.extend(preds.cpu().tolist())
 
-        # Keep track of patient status if available
-        if hasattr(data, "status"):
-            if isinstance(data.status, list):
-                all_status.extend(data.status)
-            else:
-                all_status.extend([data.status] * data.num_graphs)
+        if hasattr(data, "current_is_conv_visit"):
+            conv_flags = data.current_is_conv_visit
+
+            if not torch.is_tensor(conv_flags):
+                conv_flags = torch.tensor(conv_flags, device=device)
+
+            conv_flags = conv_flags.to(device).long()
+
+            conv_mask = conv_flags == 1
+
+            conv_true_count += int(conv_mask.sum().item())
+            conv_pred_positive_count += int((preds[conv_mask] == 1).sum().item())
 
     # Convert to numpy arrays
     y_true = np.array(y_true)
@@ -418,22 +424,17 @@ def evaluate(model, loader, device, criterion=None):
         y_true, y_pred, labels=[0, 1], zero_division=0
     )
 
-# Compute AUC (only if both classes are present)
+    # Compute AUC (only if both classes are present)
     try:
         auc = roc_auc_score(y_true, y_probs)
     except ValueError:
         auc = np.nan  # occurs when only one class is present in y_true
 
-    # Compute conversion recall (for "MCI to Dementia" subset)
-    if len(all_status) > 0:
-        conv_mask = np.array([s == "MCI to Dementia" for s in all_status])
-        if conv_mask.sum() > 0:
-            conv_recall = (y_pred[conv_mask] == 1).mean()  # prediction=1 means AD
-        else:
-            conv_recall = np.nan
+    if conv_true_count > 0:
+        conv_recall = conv_pred_positive_count / conv_true_count
     else:
-        conv_recall = np.nan
-
+        conv_recall = float("nan")
+    
     mean_loss = total_loss / len(loader.dataset)
 
     return mean_loss, acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall
