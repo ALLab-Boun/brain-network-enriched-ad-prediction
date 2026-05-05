@@ -383,7 +383,9 @@ def evaluate(model, loader, device, criterion=None):
     model.eval()
     y_true, y_pred, all_status, y_probs = [], [], [], []
     total_loss = 0.0
-
+    conv_true_count = 0
+    conv_pred_positive_count = 0
+    
     for data in loader:
         data = data.to(device)
         logits = model(data)
@@ -400,8 +402,8 @@ def evaluate(model, loader, device, criterion=None):
         y_true.extend(data.y.cpu().tolist())
         y_pred.extend(preds.cpu().tolist())
 
-        if hasattr(data, "current_is_conv_visit"):
-            conv_flags = data.current_is_conv_visit
+        if hasattr(data, "is_conv_visit"):
+            conv_flags = data.is_conv_visit
 
             if not torch.is_tensor(conv_flags):
                 conv_flags = torch.tensor(conv_flags, device=device)
@@ -412,6 +414,8 @@ def evaluate(model, loader, device, criterion=None):
 
             conv_true_count += int(conv_mask.sum().item())
             conv_pred_positive_count += int((preds[conv_mask] == 1).sum().item())
+        else:
+            print("Warning: data.is_conv_visit not found. conv_recall will be NaN.")
 
     # Convert to numpy arrays
     y_true = np.array(y_true)

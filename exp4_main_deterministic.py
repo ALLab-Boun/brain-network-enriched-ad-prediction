@@ -7,7 +7,13 @@ import argparse, random, datetime, json, math, copy
 import numpy as np, pandas as pd, matplotlib.pyplot as plt
 
 # ML imports
-from sklearn.metrics import f1_score, precision_recall_fscore_support
+from sklearn.metrics import (
+    f1_score,
+    precision_recall_fscore_support,
+    balanced_accuracy_score,
+    roc_auc_score,
+    average_precision_score,
+)
 from sklearn.utils.class_weight import compute_class_weight
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
@@ -31,42 +37,8 @@ def seed_all(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def summarize_encoder_outputs(model, loader, device):
-    model.eval()
-    outputs = []
 
-    with torch.no_grad():
-        for data in loader:
-            data = data.to(device)
 
-            z = model.encode(data)
-
-            outputs.append(z.detach().cpu())
-
-    Z = torch.cat(outputs, dim=0)
-
-    stats = {
-        "mean": Z.mean().item(),
-        "std": Z.std().item(),
-        "min": Z.min().item(),
-        "max": Z.max().item(),
-        "abs_max": Z.abs().max().item(),
-        "nan": torch.isnan(Z).any().item(),
-        "inf": torch.isinf(Z).any().item(),
-    }
-
-    return stats
-def append_encoder_stats_to_txt(out_path, fold, epoch, split_name, stats):
-    with open(out_path, "a") as f:
-        f.write(f"Fold {fold} | Epoch {epoch} | Split: {split_name}\n")
-        f.write(f"mean: {stats['mean']:.6f}\n")
-        f.write(f"std: {stats['std']:.6f}\n")
-        f.write(f"min: {stats['min']:.6f}\n")
-        f.write(f"max: {stats['max']:.6f}\n")
-        f.write(f"abs max: {stats['abs_max']:.6f}\n")
-        f.write(f"nan: {stats['nan']}\n")
-        f.write(f"inf: {stats['inf']}\n")
-        f.write("-" * 60 + "\n")
 # Main
 def main(args, seed):
     torch.manual_seed(seed)
@@ -76,36 +48,10 @@ def main(args, seed):
 
     DATASET_PATH = args.dataset_path
     CROSS_VAL_PKL_PATH = args.cross_val_pkl
+    FEATURE_SLICES = preprocessing.get_feature_slices(args.excluded_node_features)
+    
     use_es = args.early_stopping  
 
-
-    if args.excluded_node_features == None:
-        FEATURE_SLICES = {
-        "ct":  slice(0, 4),
-        "vol": slice(4, 8),
-        "sa":  slice(8, 12),
-        "mc":  slice(12, 16),
-        "sd":  slice(16, 20),
-        }
-    elif args.excluded_node_features == "min_max":
-        FEATURE_SLICES = {
-        "ct":  slice(0, 2),
-        "vol": slice(4, 6),
-        "sa":  slice(8, 10),
-        "mc":  slice(12, 14),
-        "sd":  slice(16, 18),
-    }
-    elif args.excluded_node_features == "std_min_max":
-        FEATURE_SLICES = {
-        "ct":  slice(0, 1),
-        "vol": slice(4, 5),
-        "sa":  slice(8, 9),
-        "mc":  slice(12, 13),
-        "sd":  slice(16, 17),
-    }
-    else:        
-        raise ValueError(f"Unknown option for --excluded_node_features: {args.excluded_node_features}")
-        
     # Load and preprocess data
     # if dataset path is a pt file, use load_dataset_from_single_pt
     data_list = general.load_dataset_from_single_pt(DATASET_PATH, convert_labels=False if args.dataset == "oasis" else True) if DATASET_PATH.endswith(".pt") else None
@@ -113,12 +59,15 @@ def main(args, seed):
     #     print("Loading dataset ...")
     #     data_list = general.load_dataset(DATASET_PATH)
     #     print(f"Loaded {len(data_list)} graphs.")
+
+    # Sanity check
     num_nodes = data_list[0].x.shape[0]
     print(f"Each graph has {num_nodes} nodes and {data_list[0].x.shape[1]} node features.")
 
 
-    # early stopping data
-    # list the filenames in the early stopping data path
+    # Early stopping data filenames
+    # For ADNI, we use a fixed set of early stopping subjects/visits based on the combined tuning splits.
+    # For OASIS, 1 fold of the 5-fold CV is used as the early stopping fold.
     early_stopping_data_list_names = None
     if use_es and args.dataset == "adni":
         with open("./data/adni/splits/combined_tuning_filenames.json", "r") as f:
@@ -128,51 +77,75 @@ def main(args, seed):
     splits = general.read_cross_val(CROSS_VAL_PKL_PATH)
     print(f"Loaded {len(splits)} cross-validation splits.")
 
+    conv_visit_map = {}
+    if args.dataset in ["adni", "oasis"]:
+        if args.dataset == "adni":
+            conv_df = pd.read_excel("adni_labels_internal_dataset_plus_last_visit.xlsx")
+            ptid_col = "PTID"
+            viscode_col = "VISCODE"
+        else:
+            conv_df = pd.read_excel("oasis_dataset_labels.xlsx")
+            ptid_col = "OASISID"
+            viscode_col = "scan_day"
+        
+        conv_df[ptid_col] = conv_df[ptid_col].astype(str).str.strip()
+        conv_df[viscode_col] = conv_df[viscode_col].astype(str).str.strip()
 
-    current_conv_visit_map = {}
-
-    if args.dataset == "adni":
-        conv_df = pd.read_excel("./data/adni_dataset_labels.xlsx")
-
-        required_cols = ["PTID", "VISCODE", "CURRENT_IS_CONV_VISIT"]
-        missing_cols = [c for c in required_cols if c not in conv_df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing columns in conversion Excel: {missing_cols}")
-
-        conv_df["PTID"] = conv_df["PTID"].astype(str).str.strip()
-        conv_df["VISCODE"] = conv_df["VISCODE"].astype(str).str.strip()
-        conv_df["CURRENT_IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"].fillna(0).astype(int)
-
-        current_conv_visit_map = {
-            (row.PTID, row.VISCODE): int(row.CURRENT_IS_CONV_VISIT)
+        if args.task == "diagnosis":
+            conv_df["IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"]  
+        elif args.task == "next_diagnosis":
+            conv_df["IS_CONV_VISIT"] = conv_df["NEXT_IS_CONV_VISIT"]
+        # fill nans with -1 to indicate missing conversion label for that visit
+        conv_df["IS_CONV_VISIT"] = conv_df["IS_CONV_VISIT"].fillna(-1).astype(int)
+        
+        conv_visit_map = {
+            (getattr(row, ptid_col), getattr(row, viscode_col)): int(row.IS_CONV_VISIT)
+            for row in conv_df.itertuples(index=False)
+        }
+        next_label_map = {
+            (getattr(row, ptid_col), getattr(row, viscode_col)): int(row.NEXT_LABEL) if not pd.isna(row.NEXT_LABEL) else -99
             for row in conv_df.itertuples(index=False)
         }
 
         print(
-            "Loaded CURRENT_IS_CONV_VISIT labels:",
-            sum(current_conv_visit_map.values()),
+            "Loaded IS_CONV_VISIT labels:",
+            sum(conv_visit_map.values()),
             "conversion visits out of",
-            len(current_conv_visit_map),
+            len(conv_visit_map),
             "rows"
         )
-    if args.dataset == "adni" :
-        missing_pairs = []
-
         for data in data_list:
-            ptid = str(data.ptid).strip()
-            viscode = str(data.viscode).strip()
+            if args.dataset == "adni":
+                ptid = str(data.ptid).strip()
+                viscode = str(data.viscode).strip()
+            else:
+                ptid = str(data.oasis_id).strip()
+                viscode = str(data.scan_day).strip()
 
-            flag = current_conv_visit_map.get((ptid, viscode), 0)
-
+            flag = conv_visit_map.get((ptid, viscode), -1)
             # Store as tensor so PyG Batch can collate it cleanly
-            data.current_is_conv_visit = torch.tensor(flag, dtype=torch.long)
+            data.is_conv_visit = torch.tensor(flag, dtype=torch.long)
 
-            if (ptid, viscode) not in current_conv_visit_map:
-                missing_pairs.append((ptid, viscode))
+        if args.task == "next_diagnosis":
+            # change data.y to be the NEXT_LABEL from conv_df
+            for data in data_list:
+                if args.dataset == "adni":
+                    ptid = str(data.ptid).strip()
+                    viscode = str(data.viscode).strip()
+                else:
+                    ptid = str(data.oasis_id).strip()
+                    viscode = str(data.scan_day).strip()
 
-        print(f"Pairs not found in conversion Excel: {len(missing_pairs)}")
+                next_label = next_label_map.get((ptid, viscode), -99)
+                if args.dataset == "adni": # labels should be shifted from 1/2 to 0/1 for MCI/AD in ADNI, but OASIS is already 0/1 for non-dementia/dementia
+                    next_label = next_label - 1 if next_label != -99 else -99  # convert from 1/2 (mci/ad) to 0/1
+                data.y = torch.tensor(next_label, dtype=torch.long)
+            
+            # drop the data objects where we don't have a next diagnosis label 
+            # data.y is -99 in this case
+            data_list = [data for data in data_list if data.y != -99]
+    
 
-        
     # Filter data_list to only include samples in the CV splits
     # used_filenames = get_used_filenames_from_splits(splits, include_val_in_train=True)
     # data_list = filter_data_list_by_splits(data_list, used_filenames, dataset=args.dataset)
@@ -192,10 +165,24 @@ def main(args, seed):
         filename_to_data = {data.oasis_id + "_" + data.scan_day + ".pt": data for data in data_list}
 
     # Results containers
+    # results = pd.DataFrame(columns=[
+    #     "FOLD", "ACC", "F1_macro", "F1_weighted",
+    #     "PRECISION_CLASS_0", "RECALL_CLASS_0",
+    #     "PRECISION_CLASS_1", "RECALL_CLASS_1"
+    # ])
     results = pd.DataFrame(columns=[
-        "FOLD", "ACC", "F1_macro", "F1_weighted",
-        "PRECISION_CLASS_0", "RECALL_CLASS_0",
-        "PRECISION_CLASS_1", "RECALL_CLASS_1"
+    "FOLD",
+    "ACC",
+    "BALANCED_ACC",
+    "F1_macro",
+    "F1_weighted",
+    "PRECISION_CLASS_0",
+    "RECALL_CLASS_0",
+    "PRECISION_CLASS_1",
+    "RECALL_CLASS_1",
+    "AUC",
+    "AUPRC",
+    "CONVERSION_RECALL"
     ])
     all_true, all_pred = [], []
     all_train_losses, all_test_losses, all_epoch_metrics = [], [], []
@@ -259,31 +246,16 @@ def main(args, seed):
                 early_stopping_data = [copy.deepcopy(filename_to_data[f]) for f in early_stopping_files if f in filename_to_data]
                 print(f"Early stopping size: {len(early_stopping_data)}")
 
-        # # Check that there are no subject overlaps between train, test, and early stopping sets
-        # train_subjects = set(f.split('_')[0] for f in train_files if f in filename_to_data)
-        # test_subjects = set(f.split('_')[0] for f in test_files if f in filename_to_data)
-        # early_stopping_subjects = set(f.split('_')[0] for f in early_stopping_files if f in filename_to_data) if use_es else set()
-        # print(f"Unique train subjects: {len(train_subjects)}")
-        # print(f"Unique test subjects: {len(test_subjects)}")
-        # if use_es:
-        #     print(f"Unique early stopping subjects: {len(early_stopping_subjects)}")    
-
-        # overlap_train_test = train_subjects.intersection(test_subjects)
-        # if len(overlap_train_test) > 0:
-        #     print(f"WARNING: Overlap between train and test sets! Subjects: {overlap_train_test}")
-            
-        # if use_es:
-        #     overlap_train_es = train_subjects.intersection(early_stopping_subjects)
-        #     if len(overlap_train_es) > 0:
-        #         print(f"WARNING: Overlap between train and early stopping sets! Subjects: {overlap_train_es}")
-        #     else:
-        #         print("No overlap between train and early stopping sets.")
-                
-        #     overlap_test_es = test_subjects.intersection(early_stopping_subjects)
-        #     if len(overlap_test_es) > 0:
-        #         print(f"WARNING: Overlap between test and early stopping sets! Subjects: {overlap_test_es}")
-        #     else:
-        #         print("No overlap between test and early stopping sets.")
+        # Check that there are no subject overlaps between train, test, and early stopping sets
+        train_subjects = set(f.rsplit('_',1)[0] for f in train_files if f in filename_to_data)
+        test_subjects = set(f.rsplit('_',1)[0] for f in test_files if f in filename_to_data)
+        assert len(train_subjects.intersection(test_subjects)) == 0, "Overlap between train and test sets!"
+        
+        if use_es:
+            es_files = early_stopping_files if args.dataset == "oasis" else early_stopping_data_list_names
+            es_subjects = set(f.rsplit('_',1)[0] for f in es_files if f in filename_to_data)
+            assert len(train_subjects.intersection(es_subjects)) == 0, "Overlap between train and early stopping sets!"
+            assert len(test_subjects.intersection(es_subjects)) == 0, "Overlap between test and early stopping sets!"
 
         # set seed for determinism
         fold_seed = args.seed + fold
@@ -362,7 +334,6 @@ def main(args, seed):
 
         
         # preprocess cognitive features
-        # if args.dataset == "adni":
         train_data, cog_scaler, cog_mean = preprocessing.preprocess_cognitive_features_train(train_data)
         test_data = preprocessing.preprocess_cognitive_features_test(test_data, cog_scaler, cog_mean)
         if use_es:
@@ -415,7 +386,7 @@ def main(args, seed):
 
 
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, decoupled_weight_decay=True)
-        print("Using optimizer:", optimizer, "with weight_decay:", args.weight_decay)
+        print("Using optimizer:", optimizer.__repr__(), "with weight_decay:", args.weight_decay)
 
         best_score = None
         improved_fn = None
@@ -513,15 +484,6 @@ def main(args, seed):
             "es_conv_recall": es_conv_recall,
         })
 
-        # Optional: let early stopping consider epoch 0 as a candidate best
-        if use_es and improved_fn(init_current, best_score):
-            best_score = init_current
-            best_epoch = 0
-            bad_epochs = 0
-            best_state = copy.deepcopy(model.state_dict())
-        elif use_es:
-            bad_epochs = 0
-
         msg = (
             f"Epoch 000 | "
             f"TrLoss {init_tr_loss:.4f} | TrAcc {init_tr_acc:.3f} | "
@@ -531,25 +493,6 @@ def main(args, seed):
             msg += f" | ES {monitor}={init_current:.4f} (best={best_score:.4f} @ {best_epoch})"
         print(msg)
 
-
-        # train_enc_stats = summarize_encoder_outputs(model, observation_train_loader, device)
-        # test_enc_stats = summarize_encoder_outputs(model, test_loader, device)
-
-        # append_encoder_stats_to_txt(
-        #     encoder_stats_path,
-        #     fold=fold + 1,
-        #     epoch=0,
-        #     split_name="train",
-        #     stats=train_enc_stats,
-        # )
-
-        # append_encoder_stats_to_txt(
-        #     encoder_stats_path,
-        #     fold=fold + 1,
-        #     epoch=0,
-        #     split_name="test",
-        #     stats=test_enc_stats,
-        # )
 
         for epoch in range(1, args.epochs + 1):
             tr_loss = general.train_one_epoch(model, train_loader, optimizer, device, criterion=criterion)
@@ -625,25 +568,6 @@ def main(args, seed):
                 "es_conv_recall": es_conv_recall,
             })
 
-            # train_enc_stats = summarize_encoder_outputs(model, observation_train_loader, device)
-            # test_enc_stats = summarize_encoder_outputs(model, test_loader, device)
-
-            # append_encoder_stats_to_txt(
-            #     encoder_stats_path,
-            #     fold=fold + 1,
-            #     epoch=epoch,
-            #     split_name="train",
-            #     stats=train_enc_stats,
-            # )
-
-            # append_encoder_stats_to_txt(
-            #     encoder_stats_path,
-            #     fold=fold + 1,
-            #     epoch=epoch,
-            #     split_name="test",
-            #     stats=test_enc_stats,
-            # )
-
             if use_es and bad_epochs >= patience:
                 print(f"Early stopping at epoch {epoch} (best {monitor}={best_score:.4f} at epoch {best_epoch}).")
                 break
@@ -665,7 +589,9 @@ def main(args, seed):
         # Final evaluation per fold
         test_loss, test_acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall= general.evaluate(model, test_loader, device,criterion=criterion)
         print(f"Final Test Metrics for Fold {fold+1}: Loss {test_loss:.4f} | Acc {test_acc:.3f} | F1w {f1_weighted:.3f} | F1m {f1_macro:.3f} | Precision {precision} | Recall {recall} | AUC {auc:.3f} | Conv_Recall {conv_recall:.3f}")
-        y_true, y_pred, y_pred_raw = [], [], []
+        y_true, y_pred, y_prob_class_1 = [], [], []
+        conv_true_count = 0
+        conv_pred_positive_count = 0
         model.eval()
         for data in test_loader:
             data = data.to(device)
@@ -673,17 +599,34 @@ def main(args, seed):
             probs = F.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
 
+            if hasattr(data, "is_conv_visit"):
+                conv_flags = data.is_conv_visit
+
+                if not torch.is_tensor(conv_flags):
+                    conv_flags = torch.tensor(conv_flags, device=device)
+
+                conv_flags = conv_flags.to(device).long()
+
+                conv_mask = conv_flags == 1
+
+                conv_true_count += int(conv_mask.sum().item())
+                conv_pred_positive_count += int((preds[conv_mask] == 1).sum().item())
+            else:
+                pass # Already handled by other prints or irrelevant for dataset
+
             for i in range(data.num_graphs):
                 if args.dataset == "adni":
                     ptid = data.ptid[i] if isinstance(data.ptid, list) else data.ptid
                     viscode = data.viscode[i] if isinstance(data.viscode, list) else data.viscode
                     label = int(data.y[i].cpu().item())
-                    status = data.status[i]
+                    status = data.status[i] # MCI, MCI to Dementia, Dementia etc.
+                    is_conv_visit = int(data.is_conv_visit[i].cpu().item())
                 elif args.dataset == "oasis":
                     ptid = data.oasis_id[i] if isinstance(data.oasis_id, list) else data.oasis_id
                     viscode = data.scan_day[i] if isinstance(data.scan_day, list) else data.scan_day
                     label = int(data.y[i].cpu().item())
-                    status = None  # OASIS does not have a "status" field
+                    status = f"CDRTOT_{data.CDRTOT[i].cpu().item()}"  # Consider CDRTOT as the status for OASIS
+                    is_conv_visit = int(data.is_conv_visit[i].cpu().item())
                 
                 prediction = int(preds[i].cpu().item())
                 prob_mci = float(probs[i, 0].cpu().item())
@@ -698,11 +641,13 @@ def main(args, seed):
                     "prediction": prediction,
                     "prob_mci": prob_mci,
                     "prob_ad":  prob_ad,
+                    "is_conv_visit": is_conv_visit,
                 }
                 all_prediction_records.append(record)
             
             y_true.extend(data.y.cpu().numpy())
             y_pred.extend(preds.cpu().numpy())
+            y_prob_class_1.extend(probs[:, 1].detach().cpu().numpy())
 
 
         all_true.extend(y_true)
@@ -711,27 +656,37 @@ def main(args, seed):
         precision, recall, _, _ = precision_recall_fscore_support(
             y_true, y_pred, labels=[0, 1], zero_division=0
         )
+        balanced_acc = balanced_accuracy_score(y_true, y_pred)
 
+        try:
+            final_auc = roc_auc_score(y_true, y_prob_class_1)
+        except ValueError:
+            final_auc = float("nan")
+
+        try:
+            final_auprc = average_precision_score(y_true, y_prob_class_1)
+        except ValueError:
+            final_auprc = float("nan")
+
+        final_conv_recall = float(conv_pred_positive_count) / conv_true_count if conv_true_count > 0 else float("nan")
         results.loc[fold] = [
             fold + 1,
             test_acc,
+            balanced_acc,
             f1_score(y_true, y_pred, average="macro"), 
             f1_score(y_true, y_pred, average="weighted"), 
             precision[0],
             recall[0],
             precision[1],
             recall[1],
+            final_auc,
+            final_auprc,
+            final_conv_recall
         ]
-        # if args.fusion == "attention":
-        #     # Save attention weights
-        #     y_true, y_pred, attn_df = evaluate_with_attention(model, test_loader, device)
-            
-        #     attn_df.to_csv(os.path.join(results_dir, f"fold{fold+1}_attention_weights.csv"), index=False)
 
     # Save logs
-
     prediction_df = pd.DataFrame(all_prediction_records)
-    prediction_df.to_excel(os.path.join(results_dir, "validation_predictions.xlsx"), index=False)
+    prediction_df.to_excel(os.path.join(results_dir, "all_predictions.xlsx"), index=False)
 
     os.makedirs(os.path.join(results_dir, "training_logs_plots"), exist_ok=True)
     # 
@@ -783,41 +738,10 @@ def main(args, seed):
                 index=False
             )
 
-    if args.dataset == "adni":
-        # --- Conversion recall per fold ---
-        conv_recall_per_fold = (
-            prediction_df[prediction_df["status"] == "MCI to Dementia"]
-                .groupby("fold")["prediction"]
-                .apply(lambda s: (s == 1).mean())
-                .rename("Conversion_Recall")
-        )
-        # --- Count predicted positives / negatives per fold ---
-        pred_counts_per_fold = (
-            prediction_df[prediction_df["status"] == "MCI to Dementia"]
-                .groupby("fold")["prediction"]
-                .agg(
-                    Num_Predicted_Positive=lambda s: (s == 1).sum(),
-                    Num_Predicted_Negative=lambda s: (s == 0).sum()
-                )
-        )
-        conv_recall_summary = pd.concat(
-            [conv_recall_per_fold, pred_counts_per_fold],
-            axis=1
-        )
-        conv_recall_summary.to_csv(
-            os.path.join(results_dir, "conversion_recall_per_fold.csv")
-        )
-
-        conv_recall_mean = conv_recall_per_fold.mean()
-        conv_recall_std  = conv_recall_per_fold.std()
-
     results.to_csv(os.path.join(results_dir, "fusion_results.csv"), index=False)
     means = results.drop(columns=["FOLD"]).mean()
     stds = results.drop(columns=["FOLD"]).std()
     summary = pd.DataFrame({"Mean": means, "Std": stds})
-    if args.dataset == "adni":
-        # append the rows for conversion recall
-        summary.loc["Conversion_Recall"] = [conv_recall_mean, conv_recall_std]
     summary.to_csv(os.path.join(results_dir, "fusion_mean_std_results.csv"))
 
     # Plot losses
@@ -853,7 +777,6 @@ def main(args, seed):
 
     # save the model summary
     observe.save_model_summary(model, os.path.join(results_dir, "model_summary.txt"))
-    print(f"Model summary saved to {os.path.join(results_dir, 'model_summary.txt')}")
 
     # save the dataset and crossval paths used
     with open(os.path.join(results_dir, "data_paths.txt"), "w") as f:
@@ -888,7 +811,7 @@ if __name__ == "__main__":
     parser.add_argument("--include_cnn", action="store_true")
     parser.add_argument("--include_transformer", action="store_true")
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
-    parser.add_argument("--task", type=str, choices=["diagnosis", "conversion"], default="diagnosis")
+    parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
 
     # GNN
     parser.add_argument("--include_gnn", action="store_true")
@@ -915,7 +838,7 @@ if __name__ == "__main__":
     parser.add_argument("--cortex_mlp_use_residual", action="store_true")
     parser.add_argument("--cortex_mlp_activation", type=str, choices=["relu", "gelu", "elu", "leakyrelu"], default="leakyrelu")
     parser.add_argument("--cortex_mlp_use_layernorm", action="store_true")
-    parser.add_argument("--cortex_mlp_num_layers", type=int, default=3)
+    parser.add_argument("--cortex_mlp_num_layers", type=int, default=1)
     parser.add_argument("--cortex_mlp_hidden_dims", type=int, nargs="+", default=None)
     parser.add_argument("--cortex_mlp_width_mode", type=str, default="constant" )
 

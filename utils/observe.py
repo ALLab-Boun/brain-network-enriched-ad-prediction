@@ -80,7 +80,6 @@ def print_cv_class_distributions(
             lines.append(f"  (mapped) Train+Val: {map_ctr(trval_ctr)} | Test: {map_ctr(test_ctr)}")
 
     text = "\n".join(lines)
-    print(text)
 
     if out_path is not None:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -108,3 +107,39 @@ def save_model_summary(model, filepath="model_summary.txt"):
     
     print(f"Model summary saved to {filepath}")
 
+def summarize_encoder_outputs(model, loader, device):
+    model.eval()
+    outputs = []
+
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+
+            z = model.encode(data)
+
+            outputs.append(z.detach().cpu())
+
+    Z = torch.cat(outputs, dim=0)
+
+    stats = {
+        "mean": Z.mean().item(),
+        "std": Z.std().item(),
+        "min": Z.min().item(),
+        "max": Z.max().item(),
+        "abs_max": Z.abs().max().item(),
+        "nan": torch.isnan(Z).any().item(),
+        "inf": torch.isinf(Z).any().item(),
+    }
+
+    return stats
+def append_encoder_stats_to_txt(out_path, fold, epoch, split_name, stats):
+    with open(out_path, "a") as f:
+        f.write(f"Fold {fold} | Epoch {epoch} | Split: {split_name}\n")
+        f.write(f"mean: {stats['mean']:.6f}\n")
+        f.write(f"std: {stats['std']:.6f}\n")
+        f.write(f"min: {stats['min']:.6f}\n")
+        f.write(f"max: {stats['max']:.6f}\n")
+        f.write(f"abs max: {stats['abs_max']:.6f}\n")
+        f.write(f"nan: {stats['nan']}\n")
+        f.write(f"inf: {stats['inf']}\n")
+        f.write("-" * 60 + "\n")

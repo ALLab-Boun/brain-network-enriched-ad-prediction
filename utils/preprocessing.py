@@ -1052,3 +1052,31 @@ def apply_icv_normalizer(data_list, params):
         x[:, feats] = x[:, feats] - (B * delta)
         d.x = torch.tensor(x, dtype=d.x.dtype)
     return data_list
+
+def get_feature_slices(excluded_node_features):
+    if excluded_node_features is None:
+        return {
+            "ct":  slice(0, 4),
+            "vol": slice(4, 8),
+            "sa":  slice(8, 12),
+            "mc":  slice(12, 16),
+            "sd":  slice(16, 20),
+        }
+    elif excluded_node_features == "min_max":
+        return {
+            "ct":  slice(0, 2),
+            "vol": slice(4, 6),
+            "sa":  slice(8, 10),
+            "mc":  slice(12, 14),
+            "sd":  slice(16, 18),
+        }
+    elif excluded_node_features == "std_min_max":
+        return {
+            "ct":  slice(0, 1),
+            "vol": slice(4, 5),
+            "sa":  slice(8, 9),
+            "mc":  slice(12, 13),
+            "sd":  slice(16, 17),
+        }
+    else:        
+        raise ValueError(f"Unknown option for --excluded_node_features: {excluded_node_features}")

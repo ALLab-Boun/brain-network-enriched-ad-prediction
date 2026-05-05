@@ -110,19 +110,11 @@ def parse_runner_args():
     )
 
     # Optional overrides for selected JSON fields
-    parser.add_argument(
-        "--dataset_path",
-        type=str,
-        default=None,
-        help="Override dataset_path from the JSON config."
-    )
 
-    parser.add_argument(
-        "--cross_val_pkl",
-        type=str,
-        default=None,
-        help="Override cross_val_pkl from the JSON config."
-    )
+    parser.add_argument("--dataset", type=str, default=None, help="Override dataset from the JSON config.")
+    parser.add_argument("--dataset_path", type=str, default=None, help="Override dataset_path from the JSON config.")
+    parser.add_argument("--cross_val_pkl", type=str, default=None, help="Override cross_val_pkl from the JSON config.")
+    parser.add_argument("--task", type=str, default=None, help="Override task from the JSON config (e.g., diagnosis vs. conversion).")
 
     parser.add_argument(
         "--run_dir",
@@ -170,11 +162,14 @@ def apply_overrides(config, runner_args):
 
     config = dict(config)
 
+    if runner_args.dataset is not None:
+        config["dataset"] = runner_args.dataset
     if runner_args.dataset_path is not None:
         config["dataset_path"] = runner_args.dataset_path
-
     if runner_args.cross_val_pkl is not None:
         config["cross_val_pkl"] = runner_args.cross_val_pkl
+    if runner_args.task is not None:
+        config["task"] = runner_args.task
 
     if runner_args.run_dir is not None:
         config["run_dir"] = runner_args.run_dir

@@ -9,13 +9,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # ML imports
-from sklearn.metrics import f1_score, precision_recall_fscore_support, roc_auc_score
+from sklearn.metrics import (
+    f1_score,
+    precision_recall_fscore_support,
+    balanced_accuracy_score,
+    roc_auc_score,
+    average_precision_score,
+)
 from sklearn.utils.class_weight import compute_class_weight
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence
+
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 torch.use_deterministic_algorithms(True)
@@ -27,9 +33,13 @@ import utils.observe as observe
 import utils.general as general
 import utils.preprocessing as preprocessing
 import utils.plotting as plotting
+from utils.temporal import (
+    build_subject_to_visits,
+    make_many_to_many_pyg_visit_samples,
+    TemporalDataset,
+    temporal_collate_fn_pyg_many_to_many
+)
 
-from collections import defaultdict
-import re
 
 
 # -------------------------------------------------------------------
@@ -40,160 +50,6 @@ def seed_all(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
-
-# -------------------------------------------------------------------
-# VISIT SORTING
-# -------------------------------------------------------------------
-def viscode_to_month(viscode):
-    """
-    Convert ADNI VISCODE strings to a sortable numeric time.
-
-    Examples:
-        bl -> 0
-        sc -> 0
-        m06 -> 6
-        m12 -> 12
-        m24 -> 24
-
-    Unknown / unparsable visits are pushed to the end.
-    """
-    if viscode is None:
-        return float("inf")
-
-    v = str(viscode).strip().lower()
-
-    if v in {"bl", "sc"}:
-        return 0
-
-    m = re.fullmatch(r"m(\d+)", v)
-    if m:
-        return int(m.group(1))
-
-    return float("inf")
-
-
-def build_subject_to_visits(data_list, subject_attr="ptid", visit_attr="viscode"):
-    """
-    Group processed visit-level Data objects by subject and sort visits by time.
-    """
-    subject_to_visits = defaultdict(list)
-
-    for data in data_list:
-        subject_id = getattr(data, subject_attr)
-        subject_to_visits[subject_id].append(data)
-
-    for subject_id in subject_to_visits:
-        subject_to_visits[subject_id] = sorted(
-            subject_to_visits[subject_id],
-            key=lambda d: viscode_to_month(getattr(d, visit_attr, None))
-        )
-
-    return dict(subject_to_visits)
-
-
-
-
-def make_many_to_many_pyg_visit_samples(subject_to_visits):
-    """
-    Build one full PyG-Data sequence per subject.
-
-    Each sample contains:
-      - data_seq: list of PyG Data objects
-      - y_seq: Tensor [T]
-      - ptid
-      - viscodes
-      - seq_len
-      - status_seq
-    """
-    samples = []
-
-    for ptid, visits in subject_to_visits.items():
-        if len(visits) == 0:
-            continue
-
-        valid_visits = []
-        y_list = []
-
-        for v in visits:
-            y_val = int(v.y.item()) if torch.is_tensor(v.y) else int(v.y)
-
-            if y_val not in [0, 1]:
-                continue
-
-            valid_visits.append(v)
-            y_list.append(y_val)
-
-        if len(valid_visits) == 0:
-            continue
-
-        sample = {
-            "data_seq": valid_visits,
-            "y_seq": torch.tensor(y_list, dtype=torch.long),
-            "ptid": ptid,
-            "viscodes": [v.viscode for v in valid_visits],
-            "seq_len": len(valid_visits),
-            "status_seq": [getattr(v, "status", None) for v in valid_visits],
-        }
-
-        samples.append(sample)
-
-    return samples
-
-# -------------------------------------------------------------------
-# DATASET + COLLATE
-# -------------------------------------------------------------------
-class TemporalDataset(Dataset):
-    def __init__(self, samples):
-        self.samples = samples
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        return self.samples[idx]
-
-from torch.nn.utils.rnn import pad_sequence
-
-
-def temporal_collate_fn_pyg_many_to_many(batch, pad_label=-100):
-    """
-    Keeps data_seq as a list of list[PyG Data].
-
-    Returns:
-      data_seqs:  list of length B, each item is list[Data] of length T_i
-      y_padded:   [B, T_max]
-      lengths:    [B]
-      mask:       [B, T_max]
-    """
-    data_seqs = [item["data_seq"] for item in batch]
-    y_seqs = [item["y_seq"] for item in batch]
-
-    lengths = torch.tensor([item["seq_len"] for item in batch], dtype=torch.long)
-
-    y_padded = pad_sequence(
-        y_seqs,
-        batch_first=True,
-        padding_value=pad_label
-    )  # [B, T_max]
-
-    T_max = y_padded.size(1)
-    mask = torch.arange(T_max).unsqueeze(0) < lengths.unsqueeze(1)
-
-    ptids = [item["ptid"] for item in batch]
-    viscodes = [item["viscodes"] for item in batch]
-    status_seq = [item["status_seq"] for item in batch]
-
-    return {
-        "data_seqs": data_seqs,
-        "y_padded": y_padded,
-        "lengths": lengths,
-        "mask": mask,
-        "ptids": ptids,
-        "viscodes": viscodes,
-        "status_seq": status_seq,
-    }
-
 
 
 import torch
@@ -218,7 +74,7 @@ class FusionRecurrentManyToMany(nn.Module):
         transformer_nhead=4,
         transformer_dim_feedforward=None,
         transformer_activation="gelu",
-        transformer_causal_mask=False,
+        transformer_causal_mask=True,
         use_positional_embedding=True,
         max_seq_len=32,
     ):
@@ -517,6 +373,7 @@ def train_one_epoch_temporal_many_to_many(model, loader, optimizer, device, crit
     return avg_loss
 
 
+
 @torch.no_grad()
 def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
     model.eval()
@@ -527,6 +384,12 @@ def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
     all_y_true = []
     all_y_pred = []
     all_prob_pos = []
+
+    # For conversion recall:
+    # among visits where is_conv_visit == 1,
+    # how many are predicted as class 1?
+    conv_true_count = 0
+    conv_pred_positive_count = 0
 
     for batch in loader:
         data_seqs = batch["data_seqs"]
@@ -557,25 +420,88 @@ def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
         all_y_pred.extend(valid_preds.cpu().numpy().tolist())
         all_prob_pos.extend(valid_prob_pos.cpu().numpy().tolist())
 
+        # ------------------------------------------------------------
+        # Conversion recall logic for temporal many-to-many setting
+        # ------------------------------------------------------------
+        # Build a [B, T] tensor where each position tells whether that
+        # visit is a conversion visit.
+        conv_flags = torch.zeros((B, T), dtype=torch.long, device=device)
+
+        for b in range(B):
+            seq_len = int(lengths[b].item())
+
+            for t in range(seq_len):
+                data_t = data_seqs[b][t]
+
+                if hasattr(data_t, "is_conv_visit"):
+                    flag = data_t.is_conv_visit
+
+                    if torch.is_tensor(flag):
+                        flag = int(flag.item())
+                    else:
+                        flag = int(flag)
+
+                    conv_flags[b, t] = flag
+
+        valid_conv_flags = conv_flags[mask]
+        valid_conv_preds = preds[mask]
+
+        conv_mask = valid_conv_flags == 1
+
+        conv_true_count += int(conv_mask.sum().item())
+        conv_pred_positive_count += int((valid_conv_preds[conv_mask] == 1).sum().item())
+
     if len(all_y_true) == 0:
         avg_loss = 0.0
         acc = 0.0
+        balanced_acc = 0.0
         f1_weighted = 0.0
         f1_macro = 0.0
         precision = [0.0, 0.0]
         recall = [0.0, 0.0]
         auc = float("nan")
+        auprc = float("nan")
         conv_recall = float("nan")
-        return avg_loss, acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall
+
+        return (
+            avg_loss,
+            acc,
+            balanced_acc,
+            f1_weighted,
+            f1_macro,
+            precision,
+            recall,
+            auc,
+            auprc,
+            conv_recall,
+        )
 
     all_y_true = np.array(all_y_true)
     all_y_pred = np.array(all_y_pred)
     all_prob_pos = np.array(all_prob_pos)
 
     avg_loss = total_loss / total_tokens if (criterion is not None and total_tokens > 0) else 0.0
+
     acc = float((all_y_true == all_y_pred).mean())
-    f1_weighted = f1_score(all_y_true, all_y_pred, average="weighted", zero_division=0)
-    f1_macro = f1_score(all_y_true, all_y_pred, average="macro", zero_division=0)
+
+    balanced_acc = balanced_accuracy_score(
+        all_y_true,
+        all_y_pred
+    )
+
+    f1_weighted = f1_score(
+        all_y_true,
+        all_y_pred,
+        average="weighted",
+        zero_division=0
+    )
+
+    f1_macro = f1_score(
+        all_y_true,
+        all_y_pred,
+        average="macro",
+        zero_division=0
+    )
 
     precision, recall, _, _ = precision_recall_fscore_support(
         all_y_true,
@@ -586,11 +512,28 @@ def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
 
     if len(np.unique(all_y_true)) < 2:
         auc = float("nan")
+        auprc = float("nan")
     else:
         auc = roc_auc_score(all_y_true, all_prob_pos)
+        auprc = average_precision_score(all_y_true, all_prob_pos)
 
-    conv_recall = float("nan")
-    return avg_loss, acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall
+    if conv_true_count > 0:
+        conv_recall = conv_pred_positive_count / conv_true_count
+    else:
+        conv_recall = float("nan")
+
+    return (
+        avg_loss,
+        acc,
+        balanced_acc,
+        f1_weighted,
+        f1_macro,
+        precision,
+        recall,
+        auc,
+        auprc,
+        conv_recall,
+    )
 
 @torch.no_grad()
 def predict_temporal_many_to_many(model, loader, device):
@@ -623,6 +566,7 @@ def predict_temporal_many_to_many(model, loader, device):
                     "prob_class_0": float(probs[i, t, 0].cpu().item()),
                     "prob_class_1": float(probs[i, t, 1].cpu().item()),
                     "status": batch["status_seq"][i][t],
+                    "is_conv_visit": getattr(batch["data_seqs"][i][t], "is_conv_visit", None),
                 })
 
     return records
@@ -725,34 +669,8 @@ def main(args, seed):
 
     DATASET_PATH = args.dataset_path
     CROSS_VAL_PKL_PATH = args.cross_val_pkl
+    FEATURE_SLICES = preprocessing.get_feature_slices(args.excluded_node_features)
     use_es = args.early_stopping
-
-    if args.excluded_node_features is None:
-        FEATURE_SLICES = {
-            "ct":  slice(0, 4),
-            "vol": slice(4, 8),
-            "sa":  slice(8, 12),
-            "mc":  slice(12, 16),
-            "sd":  slice(16, 20),
-        }
-    elif args.excluded_node_features == "min_max":
-        FEATURE_SLICES = {
-            "ct":  slice(0, 2),
-            "vol": slice(4, 6),
-            "sa":  slice(8, 10),
-            "mc":  slice(12, 14),
-            "sd":  slice(16, 18),
-        }
-    elif args.excluded_node_features == "std_min_max":
-        FEATURE_SLICES = {
-            "ct":  slice(0, 1),
-            "vol": slice(4, 5),
-            "sa":  slice(8, 9),
-            "mc":  slice(12, 13),
-            "sd":  slice(16, 17),
-        }
-    else:
-        raise ValueError(f"Unknown option for --excluded_node_features: {args.excluded_node_features}")
     
     if not (
     args.include_gnn
@@ -773,10 +691,13 @@ def main(args, seed):
         convert_labels=False if args.dataset == "oasis" else True
     ) if DATASET_PATH.endswith(".pt") else None
 
+    # Sanity check
     num_nodes = data_list[0].x.shape[0]
     print(f"Each graph has {num_nodes} nodes and {data_list[0].x.shape[1]} node features.")
 
-    # early stopping data names
+    # Early stopping data filenames
+    # For ADNI, we use a fixed set of early stopping subjects/visits based on the combined tuning splits.
+    # For OASIS, 1 fold of the 5-fold CV is used as the early stopping fold.
     early_stopping_data_list_names = None
     if use_es and args.dataset == "adni":
         with open("./data/adni/splits/combined_tuning_filenames.json", "r") as f:
@@ -785,6 +706,34 @@ def main(args, seed):
     # Load CV splits
     splits = general.read_cross_val(CROSS_VAL_PKL_PATH)
     print(f"Loaded {len(splits)} cross-validation splits.")
+
+    conv_visit_map = {}
+    if args.dataset == "adni":
+        conv_df = pd.read_excel("adni_dataset_labels.xlsx")
+        conv_df["PTID"] = conv_df["PTID"].astype(str).str.strip()
+        conv_df["VISCODE"] = conv_df["VISCODE"].astype(str).str.strip()
+
+        conv_df["IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"] if args.task == "diagnosis" else conv_df["NEXT_IS_CONV_VISIT"]
+        
+        conv_visit_map = {
+            (row.PTID, row.VISCODE): int(row.IS_CONV_VISIT)
+            for row in conv_df.itertuples(index=False)
+        }
+
+        print(
+            "Loaded IS_CONV_VISIT labels:",
+            sum(conv_visit_map.values()),
+            "conversion visits out of",
+            len(conv_visit_map),
+            "rows"
+        )
+    if args.dataset == "adni" :
+        for data in data_list:
+            ptid = str(data.ptid).strip()
+            viscode = str(data.viscode).strip()
+            flag = conv_visit_map.get((ptid, viscode), -1)
+            # Store as tensor so PyG Batch can collate it cleanly
+            data.is_conv_visit = torch.tensor(flag, dtype=torch.long)
 
     # global preprocessing
     data_list, cog_in_dim, vol_sum_index = preprocessing.preprocess_global_data_list(
@@ -803,12 +752,25 @@ def main(args, seed):
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     # results containers
+    # results = pd.DataFrame(columns=[
+    #     "FOLD", "ACC",  "F1_macro", "F1_weighted",
+    #     "PRECISION_CLASS_0", "RECALL_CLASS_0",
+    #     "PRECISION_CLASS_1", "RECALL_CLASS_1"
+    # ])
     results = pd.DataFrame(columns=[
-        "FOLD", "ACC", "F1_macro", "F1_weighted",
-        "PRECISION_CLASS_0", "RECALL_CLASS_0",
-        "PRECISION_CLASS_1", "RECALL_CLASS_1"
+    "FOLD",
+    "ACC",
+    "BALANCED_ACC",
+    "F1_macro",
+    "F1_weighted",
+    "PRECISION_CLASS_0",
+    "RECALL_CLASS_0",
+    "PRECISION_CLASS_1",
+    "RECALL_CLASS_1",
+    "AUC",
+    "AUPRC",
+    "CONVERSION_RECALL",
     ])
-
     all_true, all_pred = [], []
     all_train_losses, all_test_losses, all_epoch_metrics = [], [], []
 
@@ -1068,9 +1030,17 @@ def main(args, seed):
             dropout=args.dropout,
             separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
         )
+        if args.pretrained_encoder_path is not None:
+            pretrained_fold_path = os.path.join(
+                args.pretrained_encoder_path,
+                f"fold{fold+1}_model_weights.pt"
+            )
+        else:
+            pretrained_fold_path = None
+
         load_pretrained_encoder(
             fusion_encoder=fusion_encoder,
-            checkpoint_path=args.pretrained_encoder_path + f"/fold{fold+1}_model_weights.pt",
+            checkpoint_path=pretrained_fold_path,
             device=device,
             key_prefix_to_strip=args.pretrained_encoder_key_prefix,
             strict=args.strict_pretrained_encoder,
@@ -1086,7 +1056,7 @@ def main(args, seed):
             rnn_nonlinearity="tanh",
             transformer_causal_mask=True
         ).to(device)
-        print(model)
+        # print(model)
 
         # class weights from ALL visit labels
         train_y = torch.cat([s["y_seq"] for s in train_temporal_samples], dim=0)
@@ -1112,7 +1082,7 @@ def main(args, seed):
             weight_decay=args.weight_decay,
             decoupled_weight_decay=True
         )
-        print("Using optimizer:", optimizer, "with weight_decay:", args.weight_decay)
+        # print("Using optimizer:", optimizer, "with weight_decay:", args.weight_decay)
 
         fold_train_losses, fold_test_losses, epoch_metrics = [], [], []
 
@@ -1120,6 +1090,7 @@ def main(args, seed):
         best_metric = None
         best_state_dict = None
         epochs_no_improve = 0
+        best_epoch = 0
 
         def is_better(curr, best, mode, min_delta):
             if best is None:
@@ -1134,17 +1105,18 @@ def main(args, seed):
                 model, train_loader, optimizer, device, criterion
             )
 
-            test_loss, test_acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall = \
+            
+            test_loss, test_acc, test_balanced_acc, f1_weighted, f1_macro, precision, recall, auc, auprc, conv_recall = \
                 evaluate_temporal_many_to_many(model, test_loader, device, criterion)
 
-            tr_after_epoch_loss, tr_acc, tr_f1_weighted, tr_f1_macro, tr_precision, tr_recall, tr_auc, tr_conv_recall = \
+            tr_after_epoch_loss, tr_acc, tr_balanced_acc, tr_f1_weighted, tr_f1_macro, tr_precision, tr_recall, tr_auc, tr_auprc, tr_conv_recall = \
                 evaluate_temporal_many_to_many(model, observation_train_loader, device, criterion)
 
-            es_loss, es_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_conv_recall = \
-                (float("nan"),) * 8
+            es_loss, es_acc, es_balanced_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_auprc, es_conv_recall = \
+                (float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [float("nan"), float("nan")], [float("nan"), float("nan")], float("nan"), float("nan"), float("nan"))
 
             if use_es and es_loader is not None:
-                es_loss, es_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_conv_recall = \
+                es_loss, es_acc, es_balanced_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_auprc, es_conv_recall = \
                     evaluate_temporal_many_to_many(model, es_loader, device, criterion)
 
                 monitor_value_map = {
@@ -1160,6 +1132,7 @@ def main(args, seed):
                     if is_better(current_metric, best_metric, mode, min_delta):
                         best_metric = current_metric
                         best_state_dict = copy.deepcopy(model.state_dict())
+                        best_epoch = epoch
                         epochs_no_improve = 0
                     else:
                         epochs_no_improve += 1
@@ -1167,24 +1140,15 @@ def main(args, seed):
             fold_train_losses.append(tr_after_epoch_loss)
             fold_test_losses.append(test_loss)
 
-            if use_es and es_loader is not None:
-                print(
-                    f"Epoch {epoch}: "
-                    f"Train Loss={tr_after_epoch_loss:.4f}, Train Acc={tr_acc:.3f} | "
-                    f"ES Loss={es_loss:.4f}, ES Acc={es_acc:.3f} | "
-                    f"Test Loss={test_loss:.4f}, Test Acc={test_acc:.3f}"
-                )
-            else:
-                print(
-                    f"Epoch {epoch}: "
-                    f"Train Loss={tr_after_epoch_loss:.4f}, Train Acc={tr_acc:.3f} | "
-                    f"Test Loss={test_loss:.4f}, Test Acc={test_acc:.3f}"
-                )
-
-            print(
-                f"Train F1 Weighted={tr_f1_weighted:.4f}, Train F1 Macro={tr_f1_macro:.4f}, "
-                f"Test F1 Weighted={f1_weighted:.4f}, Test F1 Macro={f1_macro:.4f}"
+            msg = (
+                f"Epoch {epoch:03d} | Train {tr_after_epoch_loss:.4f} | "
+                f"Tr_Acc {tr_acc:.3f} | Tr_F1w {tr_f1_weighted:.3f} | "
+                f"Test {test_loss:.4f} | Acc {test_acc:.3f} | F1w {f1_weighted:.3f}"
             )
+            if use_es and es_loader is not None and not (isinstance(current_metric, float) and np.isnan(current_metric)):
+                msg += f" | ES {monitor}={current_metric:.4f} (best={best_metric:.4f} @ {best_epoch})"
+                msg += f" | bad_epochs={epochs_no_improve}/{patience}"
+            print(msg)
 
             epoch_row = {
                 "epoch": epoch,
@@ -1235,8 +1199,8 @@ def main(args, seed):
             model.load_state_dict(best_state_dict)
             print("Loaded best model state based on early stopping metric.")
 
-        test_loss, test_acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall = \
-            evaluate_temporal_many_to_many(model, test_loader, device, criterion=criterion)
+        test_loss, test_acc, test_balanced_acc, f1_weighted, f1_macro, precision, recall, auc, auprc, conv_recall = \
+            evaluate_temporal_many_to_many(model, test_loader, device, criterion)
 
         print(
             f"Final Test Metrics for Fold {fold+1}: "
@@ -1253,7 +1217,7 @@ def main(args, seed):
 
         y_true = [rec["label"] for rec in prediction_records]
         y_pred = [rec["prediction"] for rec in prediction_records]
-
+        y_prob_class_1 = [rec["prob_class_1"] for rec in prediction_records]
         all_true.extend(y_true)
         all_pred.extend(y_pred)
 
@@ -1261,12 +1225,42 @@ def main(args, seed):
             y_true, y_pred, labels=[0, 1], zero_division=0
         )
 
+
+        balanced_acc = balanced_accuracy_score(y_true, y_pred)
+
+        if len(np.unique(y_true)) < 2:
+            final_auc = float("nan")
+            final_auprc = float("nan")
+        else:
+            final_auc = roc_auc_score(y_true, y_prob_class_1)
+            final_auprc = average_precision_score(y_true, y_prob_class_1)
+
+        conv_records = [
+            rec for rec in prediction_records
+            if rec.get("is_conv_visit") == 1
+        ]
+
+        if len(conv_records) > 0:
+            final_conv_recall = np.mean([
+                rec["prediction"] == 1
+                for rec in conv_records
+            ])
+        else:
+            final_conv_recall = float("nan")
+
         results.loc[fold] = [
             fold + 1,
             test_acc,
+            balanced_acc,
             f1_score(y_true, y_pred, average="macro", zero_division=0),
             f1_score(y_true, y_pred, average="weighted", zero_division=0),
-            precision[0], recall[0], precision[1], recall[1],
+            precision[0],
+            recall[0],
+            precision[1],
+            recall[1],
+            final_auc,
+            final_auprc,
+            final_conv_recall,
         ]
 
         all_train_losses.append(fold_train_losses)
@@ -1284,7 +1278,7 @@ def main(args, seed):
     summary.to_csv(os.path.join(results_dir, "classification_mean_std_results.csv"))
 
     all_prediction_df = pd.DataFrame(all_prediction_records)
-    all_prediction_df.to_csv(os.path.join(results_dir, "all_predictions.csv"), index=False)
+    all_prediction_df.to_excel(os.path.join(results_dir, "all_predictions.xlsx"), index=False)
 
     os.makedirs(os.path.join(results_dir, "training_logs_plots"), exist_ok=True)
 
@@ -1387,10 +1381,10 @@ if __name__ == "__main__":
     parser.add_argument("--include_cortex_mlp", action="store_true")
     parser.add_argument("--include_cog_mlp", action="store_true")
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
-    parser.add_argument("--task", type=str, choices=["diagnosis", "conversion"], default="diagnosis")
+    parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
 
     # Temporal settings
-    parser.add_argument("--temporal_type", type=str, choices=["rnn", "lstm", "gru"], default="rnn")
+    parser.add_argument("--temporal_type", type=str, choices=["rnn", "transformer", "lstm", "gru"], default="transformer")
     parser.add_argument("--dropout", type=float, default=0.5) # dropout for temporal classifier
     parser.add_argument("--temporal_hidden_dim", type=int, default=128)
     # Pretrained encoder loading
