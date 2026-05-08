@@ -210,11 +210,6 @@ def main(args, seed):
             # data.y is -99 in this case
             data_list = [data for data in data_list if data.y != -99]
     
-
-    # Filter data_list to only include samples in the CV splits
-    # used_filenames = get_used_filenames_from_splits(splits, include_val_in_train=True)
-    # data_list = filter_data_list_by_splits(data_list, used_filenames, dataset=args.dataset)
-    
     # PREPROCCESSING STEPS:
     data_list, cog_in_dim, vol_sum_index = preprocessing.preprocess_global_data_list(
         data_list=data_list,
@@ -223,18 +218,12 @@ def main(args, seed):
         feature_slices=FEATURE_SLICES
     )
 
-    # Build filename --> data map
+    # Build filename --> data map (cross-val splits are defined in terms of filenames, so we need this to quickly get the data objects for each split)
     if args.dataset == "adni":
         filename_to_data = {data.ptid + "_" + data.viscode + ".pt": data for data in data_list}
     elif args.dataset == "oasis": 
         filename_to_data = {data.oasis_id + "_" + data.scan_day + ".pt": data for data in data_list}
-
-    # Results containers
-    # results = pd.DataFrame(columns=[
-    #     "FOLD", "ACC", "F1_macro", "F1_weighted",
-    #     "PRECISION_CLASS_0", "RECALL_CLASS_0",
-    #     "PRECISION_CLASS_1", "RECALL_CLASS_1"
-    # ])
+    
     results = pd.DataFrame(columns=[
     "FOLD",
     "ACC",
@@ -515,7 +504,6 @@ def main(args, seed):
 
             test_loss, test_acc, f1_weighted, f1_macro, precision, recall, auc, conv_recall= general.evaluate(model, test_loader, device,criterion=criterion)
             tr_after_epoch_loss, tr_acc, tr_f1_weighted, tr_f1_macro, tr_precision, tr_recall, tr_auc, tr_conv_recall= general.evaluate(model, observation_train_loader, device,criterion=criterion)
-            # tr_after_epoch_loss, tr_acc, tr_f1_weighted, tr_f1_macro, tr_precision, tr_recall, tr_auc, tr_conv_recall= evaluate(model, train_loader, device,criterion=criterion)
 
             # early stopping evaluation
             if use_es:
