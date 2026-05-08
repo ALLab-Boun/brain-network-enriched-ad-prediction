@@ -37,7 +37,72 @@ def seed_all(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+def build_model_kwargs_from_args(args, cog_in_dim):
+    gnn_kwargs = {
+        "dropout": args.gnn_dropout,
+        "hidden_dim": args.gnn_hidden_dim,
+        "use_pre_mlp": args.gnn_use_pre_mlp,
+        "cnn_input_add_flattened_node_features": args.gnn_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.gnn_add_output_skip,
+        "layer_connectivity": args.gnn_layer_connectivity,
+        "norm_type": args.gnn_norm_type,
+        "num_layers": args.gnn_num_layers,
+        "layer": args.gnn_layer,
+        "readout": args.gnn_readout,
+        "graph_pool": args.gnn_graph_pool,
+    }
 
+    cortex_mlp_kwargs = {
+        "hidden_dim": args.cortex_mlp_hidden_dim,
+        "use_residual": args.cortex_mlp_use_residual,
+        "activation": args.cortex_mlp_activation,
+        "use_layernorm": args.cortex_mlp_use_layernorm,
+        "num_layers": args.cortex_mlp_num_layers,
+        "hidden_dims": args.cortex_mlp_hidden_dims,
+        "width_mode": args.cortex_mlp_width_mode,
+        "dropout": args.cortex_mlp_dropout,
+    }
+
+    cog_mlp_kwargs = {
+        "hidden_dim": args.cog_hidden_dim,
+        "num_layers": args.cog_mlp_num_layers,
+        "width_mode": args.cog_mlp_width_mode,
+        "use_residual_to_last": args.cog_mlp_use_residual_to_last,
+        "dropout": args.cog_mlp_dropout,
+        "cog_in_dim": cog_in_dim,
+    }
+
+    adj_cnn_kwargs = {
+        "dropout": args.adj_cnn_dropout,
+        "conv_channels": args.adj_cnn_conv_channels,
+        "kernel_sizes": args.adj_cnn_kernel_sizes,
+        "strides": args.adj_cnn_strides,
+        "pool_types": args.adj_cnn_pool_types,
+        "pool_kernel_sizes": args.adj_cnn_pool_kernel_sizes,
+        "negative_slope": args.adj_cnn_negative_slope,
+        "norm_type": args.adj_cnn_norm_type,
+        "group_norm_groups": args.adj_cnn_group_norm_groups,
+        "readout": args.adj_cnn_readout,
+    }
+
+    transformer_kwargs = {
+        "dropout": args.cort_transformer_dropout,
+        "pos_encoding_type": args.pos_encoding_type,
+        "lpe_dim": args.lpe_dim,
+        "hidden_dim": args.cortex_transformer_hidden_dim,
+        "num_layers": args.cortex_transformer_num_layers,
+        "num_heads": args.cortex_transformer_num_heads,
+        "cnn_input_add_flattened_node_features": args.cortex_transformer_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.cortex_transformer_add_output_skip,
+    }
+
+    return {
+        "gnn_kwargs": gnn_kwargs,
+        "cortex_mlp_kwargs": cortex_mlp_kwargs,
+        "cog_mlp_kwargs": cog_mlp_kwargs,
+        "adj_cnn_kwargs": adj_cnn_kwargs,
+        "transformer_kwargs": transformer_kwargs,
+    }
 
 # Main
 def main(args, seed):
@@ -261,77 +326,28 @@ def main(args, seed):
         fold_seed = args.seed + fold
         seed_all(fold_seed)        
 
+
         if args.fusion == "concat":
             print("Using concatenation-based fusion model.")
+
+            branch_kwargs = build_model_kwargs_from_args(args, cog_in_dim)
+
             model = FusionModel(
                 num_nodes=num_nodes,
                 node_in_dim=train_data[0].x.shape[1],
                 num_classes=2,
                 dropout=args.dropout,
+
+                include_gnn=args.include_gnn,
+                include_cnn=args.include_cnn,
+                include_mlp=args.include_cortex_mlp,
+                include_transformer=args.include_transformer,
+                include_cog_mlp=args.include_cog_mlp,
+
                 separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
 
-
-                # GNN
-                include_gnn=args.include_gnn,
-                gnn_dropout=args.gnn_dropout,
-                gnn_hidden_dim=args.gnn_hidden_dim,
-                gnn_use_pre_mlp=args.gnn_use_pre_mlp,
-                gnn_cnn_input_add_flattened_node_features=args.gnn_cnn_input_add_flattened_node_features,
-                gnn_add_output_skip=args.gnn_add_output_skip,
-                gnn_layer_connectivity=args.gnn_layer_connectivity,
-                gnn_norm_type=args.gnn_norm_type,
-                gnn_num_layers=args.gnn_num_layers,
-                gnn_layer=args.gnn_layer,
-                gnn_readout=args.gnn_readout,
-                gnn_graph_pool=args.gnn_graph_pool,
-
-
-                # Cortex MLP
-                include_mlp=args.include_cortex_mlp,
-                cortex_mlp_hidden_dim=args.cortex_mlp_hidden_dim,
-                cortex_mlp_use_residual=args.cortex_mlp_use_residual,
-                cortex_mlp_activation = args.cortex_mlp_activation,
-                cortex_mlp_use_layernorm = args.cortex_mlp_use_layernorm,
-                cortex_mlp_num_layers = args.cortex_mlp_num_layers,
-                cortex_mlp_hidden_dims=args.cortex_mlp_hidden_dims,
-                cortex_mlp_width_mode=args.cortex_mlp_width_mode,
-                cortex_mlp_dropout=args.cortex_mlp_dropout,
-
-                # Cognitive MLP
-                include_cog_mlp=args.include_cog_mlp,
-                cog_hidden_dim=args.cog_hidden_dim,
-                cog_mlp_num_layers = args.cog_mlp_num_layers,
-                cog_mlp_width_mode=args.cog_mlp_width_mode,
-                cog_mlp_use_residual_to_last=args.cog_mlp_use_residual_to_last,
-                cog_mlp_dropout=args.cog_mlp_dropout,
-                cog_in_dim=cog_in_dim,
-
-                # Adjacency CNN
-                include_cnn=args.include_cnn,
-                adj_cnn_dropout=args.adj_cnn_dropout,
-                adj_cnn_conv_channels=args.adj_cnn_conv_channels,
-                adj_cnn_kernel_sizes=args.adj_cnn_kernel_sizes,
-                adj_cnn_strides=args.adj_cnn_strides,
-                adj_cnn_pool_types=args.adj_cnn_pool_types,
-                adj_cnn_pool_kernel_sizes=args.adj_cnn_pool_kernel_sizes,
-                adj_cnn_negative_slope=args.adj_cnn_negative_slope,
-                adj_cnn_norm_type=args.adj_cnn_norm_type,
-                adj_cnn_group_norm_groups=args.adj_cnn_group_norm_groups,
-                adj_cnn_readout = args.adj_cnn_readout,
-
-                # Cortex Transformer
-                include_transformer=args.include_transformer,
-                cort_transformer_dropout=args.cort_transformer_dropout,
-                pos_encoding_type=args.pos_encoding_type,
-                lpe_dim=args.lpe_dim,
-                cortex_transformer_hidden_dim=args.cortex_transformer_hidden_dim,
-                cortex_transformer_num_layers=args.cortex_transformer_num_layers,
-                cortex_transformer_num_heads=args.cortex_transformer_num_heads,
-                cortex_transformer_cnn_input_add_flattened_node_features=args.cortex_transformer_cnn_input_add_flattened_node_features,
-                cortex_transformer_add_output_skip=args.cortex_transformer_add_output_skip,
-
+                **branch_kwargs,
             ).to(device)
-
         
         # preprocess cognitive features
         train_data, cog_scaler, cog_mean = preprocessing.preprocess_cognitive_features_train(train_data)
