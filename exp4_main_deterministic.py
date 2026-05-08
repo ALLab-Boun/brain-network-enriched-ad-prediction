@@ -327,7 +327,9 @@ def main(args, seed):
                 num_classes=2,
                 dropout=args.dropout,
 
-                include_gnn=args.include_gnn,
+                
+                include_cortex_gnn=args.include_cortex_gnn,
+                include_adjacency_gnn=args.include_adjacency_gnn,
                 include_cnn=args.include_cnn,
                 include_mlp=args.include_cortex_mlp,
                 include_transformer=args.include_transformer,
@@ -818,7 +820,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
 
     # GNN
-    parser.add_argument("--include_gnn", action="store_true")
+    parser.add_argument("--include_cortex_gnn", action="store_true")
+    parser.add_argument("--include_adjacency_gnn", action="store_true")
     parser.add_argument("--gnn_dropout", type=float, default=0.5)
     parser.add_argument("--gnn_hidden_dim", type=int, default=256)
     parser.add_argument("--edge_threshold", type=float, default=1.0)

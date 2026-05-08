@@ -77,6 +77,29 @@ def preprocess_global_data_list(
 
     add_adj = bool(getattr(args, "add_adj_row_as_node_feature", False))
     separate_adj_features = bool(getattr(args, "separate_adj_features_instead_of_concat", False))
+    if args.include_adjacency_gnn:
+        print("Creating adjacency row node features ...")
+
+        for d in data_list:
+            if not hasattr(d, "weighted_adj_matrix") or d.weighted_adj_matrix is None:
+                raise AttributeError("Cannot create adjacency row features: missing `weighted_adj_matrix`.")
+
+            A = d.weighted_adj_matrix
+
+            if A.dim() == 3 and A.size(0) == 1:
+                A = A.squeeze(0)
+
+            if A.dim() != 2:
+                raise ValueError(f"Expected weighted_adj_matrix to be [N,N], got {tuple(A.shape)}")
+
+            N = d.x.size(0)
+            if A.size(0) != N or A.size(1) != N:
+                raise ValueError(f"Adjacency shape {tuple(A.shape)} does not match num nodes {N}")
+
+            A = A.to(device=d.x.device, dtype=d.x.dtype)
+
+            d.x_adj_row = A
+
     if add_adj:
         print("Appending adjacency row (dense) as node features...")
         for d in data_list:

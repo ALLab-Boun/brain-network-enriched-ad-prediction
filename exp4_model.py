@@ -25,6 +25,44 @@ class FusionModel(nn.Module):
       - adj_cnn_kwargs
       - transformer_kwargs
     """
+    def _make_gnn_branch(self, node_in_dim, gnn_cfg):
+        if gnn_cfg["readout"] == "cnn":
+            return GNNBranch_wo_pooling_with_1dcnn_flattened(
+                node_in_dim=node_in_dim,
+                hidden_dim=gnn_cfg["hidden_dim"],
+                out_dim=128,
+                dropout=gnn_cfg["dropout"],
+                num_gnn_layers=gnn_cfg["num_layers"],
+                norm_type=gnn_cfg["norm_type"],
+                gnn_layer=gnn_cfg["layer"],
+                use_pre_mlp=gnn_cfg["use_pre_mlp"],
+                cnn_input_add_flattened_node_features=gnn_cfg[
+                    "cnn_input_add_flattened_node_features"
+                ],
+                add_output_skip=gnn_cfg["add_output_skip"],
+                layer_connectivity=gnn_cfg["layer_connectivity"],
+            )
+
+        elif gnn_cfg["readout"] == "pool":
+            return GNNBranch_with_pooling(
+                node_in_dim=node_in_dim,
+                hidden_dim=gnn_cfg["hidden_dim"],
+                out_dim=128,
+                dropout=gnn_cfg["dropout"],
+                num_gnn_layers=gnn_cfg["num_layers"],
+                norm_type=gnn_cfg["norm_type"],
+                gnn_layer=gnn_cfg["layer"],
+                use_pre_mlp=gnn_cfg["use_pre_mlp"],
+                graph_pool=gnn_cfg["graph_pool"],
+                add_output_skip=gnn_cfg["add_output_skip"],
+                layer_connectivity=gnn_cfg["layer_connectivity"],
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown gnn readout: {gnn_cfg['readout']}. "
+                "Expected one of ['cnn', 'pool']."
+            )
 
     def __init__(
         self,
@@ -33,7 +71,9 @@ class FusionModel(nn.Module):
         num_classes: int = 2,
         dropout: float = 0.5,
 
-        include_gnn: bool = True,
+
+        include_cortex_gnn: bool = True,
+        include_adjacency_gnn: bool = False,   
         include_cnn: bool = False,
         include_mlp: bool = True,
         include_transformer: bool = False,
@@ -50,8 +90,9 @@ class FusionModel(nn.Module):
         super().__init__()
 
         self.num_nodes = num_nodes
-
-        self.include_gnn = include_gnn
+     
+        self.include_cortex_gnn = include_cortex_gnn
+        self.include_adjacency_gnn = include_adjacency_gnn
         self.include_cnn = include_cnn
         self.include_mlp = include_mlp
         self.include_transformer = include_transformer
@@ -85,50 +126,17 @@ class FusionModel(nn.Module):
         # Branch construction
         # ------------------------------------------------------------------
 
-        if include_gnn:
-            gnn_node_in_dim = (
-                num_nodes
-                if self.separate_adj_features_instead_of_concat
-                else node_in_dim
+        if include_cortex_gnn:
+            self.cortex_gnn = self._make_gnn_branch(
+                node_in_dim=node_in_dim,
+                gnn_cfg=gnn_cfg,
             )
 
-            if gnn_cfg["readout"] == "cnn":
-                self.gnn = GNNBranch_wo_pooling_with_1dcnn_flattened(
-                    node_in_dim=gnn_node_in_dim,
-                    hidden_dim=gnn_cfg["hidden_dim"],
-                    out_dim=128,
-                    dropout=gnn_cfg["dropout"],
-                    num_gnn_layers=gnn_cfg["num_layers"],
-                    norm_type=gnn_cfg["norm_type"],
-                    gnn_layer=gnn_cfg["layer"],
-                    use_pre_mlp=gnn_cfg["use_pre_mlp"],
-                    cnn_input_add_flattened_node_features=gnn_cfg[
-                        "cnn_input_add_flattened_node_features"
-                    ],
-                    add_output_skip=gnn_cfg["add_output_skip"],
-                    layer_connectivity=gnn_cfg["layer_connectivity"],
-                )
-
-            elif gnn_cfg["readout"] == "pool":
-                self.gnn = GNNBranch_with_pooling(
-                    node_in_dim=gnn_node_in_dim,
-                    hidden_dim=gnn_cfg["hidden_dim"],
-                    out_dim=128,
-                    dropout=gnn_cfg["dropout"],
-                    num_gnn_layers=gnn_cfg["num_layers"],
-                    norm_type=gnn_cfg["norm_type"],
-                    gnn_layer=gnn_cfg["layer"],
-                    use_pre_mlp=gnn_cfg["use_pre_mlp"],
-                    graph_pool=gnn_cfg["graph_pool"],
-                    add_output_skip=gnn_cfg["add_output_skip"],
-                    layer_connectivity=gnn_cfg["layer_connectivity"],
-                )
-
-            else:
-                raise ValueError(
-                    f"Unknown gnn readout: {gnn_cfg['readout']}. "
-                    "Expected one of ['cnn', 'pool']."
-                )
+        if include_adjacency_gnn:
+            self.adjacency_gnn = self._make_gnn_branch(
+                node_in_dim=num_nodes,
+                gnn_cfg=gnn_cfg,
+            )
 
         if include_cnn:
             self.cnn = CNNAdjacency1D_Pool(
@@ -201,9 +209,11 @@ class FusionModel(nn.Module):
 
         concat_dim = 0
 
-        if include_gnn:
+        if include_cortex_gnn:
             concat_dim += 128
 
+        if include_adjacency_gnn:
+            concat_dim += 128
         if include_cnn:
             concat_dim += 128
 
@@ -247,33 +257,33 @@ class FusionModel(nn.Module):
 
         zs = []
 
-        if self.include_gnn:
-            if not self.separate_adj_features_instead_of_concat:
-                zs.append(
-                    self.gnn(
-                        x,
-                        edge_index,
-                        edge_attr=edge_attr,
-                        batch=batch,
-                    )
+        if self.include_cortex_gnn:
+            zs.append(
+                self.cortex_gnn(
+                    x,
+                    edge_index,
+                    edge_attr=edge_attr,
+                    batch=batch,
                 )
-            else:
-                x_adj_row = getattr(data, "x_adj_row", None)
+            )
 
-                if x_adj_row is None:
-                    raise ValueError(
-                        "separate_adj_features_instead_of_concat=True, "
-                        "but data.x_adj_row is missing."
-                    )
+        if self.include_adjacency_gnn:
+            x_adj_row = getattr(data, "x_adj_row", None)
 
-                zs.append(
-                    self.gnn(
-                        x_adj_row,
-                        edge_index,
-                        edge_attr=edge_attr,
-                        batch=batch,
-                    )
+            if x_adj_row is None:
+                raise ValueError(
+                    "include_adjacency_gnn=True, but data.x_adj_row is missing. "
+                    "Make sure preprocessing creates x_adj_row from weighted_adj_matrix."
                 )
+
+            zs.append(
+                self.adjacency_gnn(
+                    x_adj_row,
+                    edge_index,
+                    edge_attr=edge_attr,
+                    batch=batch,
+                )
+            )
 
         if self.include_cnn:
             if adj is None:
