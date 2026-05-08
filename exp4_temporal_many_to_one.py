@@ -35,9 +35,7 @@ import utils.preprocessing as preprocessing
 import utils.plotting as plotting
 from utils.temporal import (
     build_subject_to_visits,
-    make_many_to_many_pyg_visit_samples,
     TemporalDataset,
-    temporal_collate_fn_pyg_many_to_many
 )
 
 
@@ -57,7 +55,99 @@ import torch.nn as nn
 from torch_geometric.data import Batch
 
 
-class FusionRecurrentManyToMany(nn.Module):
+def make_many_to_one_pyg_visit_samples(subject_to_visits, min_seq_len=1):
+    """
+    Build prefix-based many-to-one PyG temporal samples.
+
+    For a subject with visits [v1, v2, v3], this creates:
+        [v1]         -> y(v1)
+        [v1, v2]     -> y(v2)
+        [v1, v2, v3] -> y(v3)
+
+    Each sample contains only visits available up to the target visit.
+    Therefore, for a Transformer, no causal attention mask is needed.
+    """
+    samples = []
+
+    for ptid, visits in subject_to_visits.items():
+        if len(visits) == 0:
+            continue
+
+        valid_visits = []
+
+        for v in visits:
+            y_val = int(v.y.item()) if torch.is_tensor(v.y) else int(v.y)
+
+            if y_val not in [0, 1]:
+                continue
+
+            valid_visits.append(v)
+
+        if len(valid_visits) < min_seq_len:
+            continue
+
+        for target_idx in range(min_seq_len - 1, len(valid_visits)):
+            prefix = valid_visits[:target_idx + 1]
+            target_visit = valid_visits[target_idx]
+            y_val = int(target_visit.y.item()) if torch.is_tensor(target_visit.y) else int(target_visit.y)
+
+            sample = {
+                "data_seq": prefix,
+                "y": torch.tensor(y_val, dtype=torch.long),
+                "ptid": ptid,
+                "target_viscode": getattr(target_visit, "viscode", None),
+                "viscodes": [getattr(v, "viscode", None) for v in prefix],
+                "seq_len": len(prefix),
+                "target_status": getattr(target_visit, "status", None),
+                "status_seq": [getattr(v, "status", None) for v in prefix],
+                "target_is_conv_visit": getattr(target_visit, "is_conv_visit", None),
+            }
+
+            samples.append(sample)
+
+    return samples
+
+
+def temporal_collate_fn_pyg_many_to_one(batch):
+    """
+    Keeps data_seq as a list of list[PyG Data].
+
+    Returns:
+      data_seqs: list of length B, each item is list[Data] of length T_i
+      y:         [B]
+      lengths:   [B]
+      mask:      [B, T_max]
+    """
+    data_seqs = [item["data_seq"] for item in batch]
+    y = torch.stack([item["y"] for item in batch], dim=0)
+
+    lengths = torch.tensor([item["seq_len"] for item in batch], dtype=torch.long)
+
+    T_max = int(lengths.max().item())
+    mask = torch.arange(T_max).unsqueeze(0) < lengths.unsqueeze(1)
+
+    ptids = [item["ptid"] for item in batch]
+    target_viscodes = [item["target_viscode"] for item in batch]
+    viscodes = [item["viscodes"] for item in batch]
+    target_status = [item["target_status"] for item in batch]
+    status_seq = [item["status_seq"] for item in batch]
+    target_is_conv_visit = [item["target_is_conv_visit"] for item in batch]
+
+    return {
+        "data_seqs": data_seqs,
+        "y": y,
+        "lengths": lengths,
+        "mask": mask,
+        "ptids": ptids,
+        "target_viscodes": target_viscodes,
+        "viscodes": viscodes,
+        "target_status": target_status,
+        "status_seq": status_seq,
+        "target_is_conv_visit": target_is_conv_visit,
+    }
+
+
+class FusionRecurrentManyToOne(nn.Module):
     def __init__(
         self,
         fusion_encoder,
@@ -68,14 +158,13 @@ class FusionRecurrentManyToMany(nn.Module):
         recurrent_dropout=0.0,
         pre_recurrent_dropout=0.0,
         classifier_dropout=0.2,
-        freeze_fusion_encoder=False,
+        freeze_fusion_encoder=True,
         rnn_nonlinearity="tanh",  # only used when temporal_type="rnn"
 
         # Transformer-specific options
         transformer_nhead=4,
         transformer_dim_feedforward=None,
         transformer_activation="gelu",
-        transformer_causal_mask=True,
         use_positional_embedding=True,
         max_seq_len=32,
     ):
@@ -84,8 +173,6 @@ class FusionRecurrentManyToMany(nn.Module):
         self.fusion_encoder = fusion_encoder
         self.freeze_fusion_encoder = freeze_fusion_encoder
         self.temporal_type = temporal_type.lower()
-
-        self.transformer_causal_mask = transformer_causal_mask
         self.use_positional_embedding = use_positional_embedding
         self.max_seq_len = max_seq_len
 
@@ -97,46 +184,45 @@ class FusionRecurrentManyToMany(nn.Module):
 
         self.encoder_out_dim = fusion_encoder.concat_dim
 
-        # Dropout applied directly to encoded visit embeddings
-        self.pre_recurrent = nn.Dropout(pre_recurrent_dropout)
+        # Kept for CLI compatibility. The original script used encoder_out_dim
+        # as the temporal hidden size, so this version does the same.
+        self.hidden_dim = hidden_dim
 
+        self.pre_recurrent = nn.Dropout(pre_recurrent_dropout)
         internal_recurrent_dropout = recurrent_dropout if num_layers > 1 else 0.0
 
         if self.temporal_type == "lstm":
             self.temporal = nn.LSTM(
                 input_size=self.encoder_out_dim,
-                hidden_size=self.encoder_out_dim, #hidden_dim
+                hidden_size=self.encoder_out_dim,
                 num_layers=num_layers,
                 batch_first=True,
                 dropout=internal_recurrent_dropout,
                 bidirectional=False,
             )
-
             self.temporal_out_dim = self.encoder_out_dim
 
         elif self.temporal_type == "gru":
             self.temporal = nn.GRU(
                 input_size=self.encoder_out_dim,
-                hidden_size=self.encoder_out_dim, #hidden_dim
+                hidden_size=self.encoder_out_dim,
                 num_layers=num_layers,
                 batch_first=True,
                 dropout=internal_recurrent_dropout,
                 bidirectional=False,
             )
-
             self.temporal_out_dim = self.encoder_out_dim
 
         elif self.temporal_type == "rnn":
             self.temporal = nn.RNN(
                 input_size=self.encoder_out_dim,
-                hidden_size=self.encoder_out_dim, #hidden_dim
+                hidden_size=self.encoder_out_dim,
                 num_layers=num_layers,
                 batch_first=True,
                 dropout=internal_recurrent_dropout,
                 bidirectional=False,
                 nonlinearity=rnn_nonlinearity,
             )
-
             self.temporal_out_dim = self.encoder_out_dim
 
         elif self.temporal_type == "transformer":
@@ -187,47 +273,21 @@ class FusionRecurrentManyToMany(nn.Module):
             for p in self.fusion_encoder.parameters():
                 p.requires_grad = False
 
-    def _make_transformer_attention_mask(self, T, device):
-        """
-        Returns attention mask of shape [T, T].
-
-        In PyTorch TransformerEncoder:
-            mask[q, k] = True means query position q CANNOT attend to key position k.
-
-        Causal next_to_previous mask:
-            Later visits can attend to previous visits.
-            Earlier visits cannot attend to later visits.
-
-        Allowed:
-            t=0 -> 0
-            t=1 -> 0,1
-            t=2 -> 0,1,2
-            t=3 -> 0,1,2,3
-
-        Mask:
-            upper triangular part above diagonal is True.
-        """
-
-        return torch.triu(
-            torch.ones(T, T, dtype=torch.bool, device=device),
-            diagonal=1
-        )
-
     def forward(self, data_seqs, lengths):
         """
         Parameters
         ----------
         data_seqs:
             list of length B.
-            Each item is a list of PyG Data objects for one subject.
+            Each item is a prefix list of PyG Data objects.
 
         lengths:
-            Tensor [B], number of valid visits for each subject.
+            Tensor [B], number of valid visits for each prefix.
 
         Returns
         -------
         logits:
-            Tensor [B, T_max, num_classes]
+            Tensor [B, num_classes], prediction for the final visit in each prefix.
         """
         device = next(self.parameters()).device
 
@@ -235,9 +295,6 @@ class FusionRecurrentManyToMany(nn.Module):
         B = len(data_seqs)
         T_max = int(lengths.max().item())
 
-        # ---------------------------------------------------------
-        # Flatten all valid visits across the batch
-        # ---------------------------------------------------------
         flat_visits = []
         positions = []
 
@@ -251,21 +308,14 @@ class FusionRecurrentManyToMany(nn.Module):
 
         pyg_batch = Batch.from_data_list(flat_visits).to(device)
 
-        # ---------------------------------------------------------
-        # Encode each visit using your existing FusionModel
-        # ---------------------------------------------------------
         if self.freeze_fusion_encoder:
             with torch.no_grad():
                 flat_embeddings = self.fusion_encoder.encode(pyg_batch)
         else:
             flat_embeddings = self.fusion_encoder.encode(pyg_batch)
 
-        # flat_embeddings: [num_valid_visits, fusion_dim]
         fusion_dim = flat_embeddings.size(-1)
 
-        # ---------------------------------------------------------
-        # Restore padded temporal tensor: [B, T_max, fusion_dim]
-        # ---------------------------------------------------------
         x_encoded = torch.zeros(
             B,
             T_max,
@@ -277,14 +327,8 @@ class FusionRecurrentManyToMany(nn.Module):
         for idx, (i, t) in enumerate(positions):
             x_encoded[i, t] = flat_embeddings[idx]
 
-        # ---------------------------------------------------------
-        # Dropout before temporal module
-        # ---------------------------------------------------------
         x_encoded = self.pre_recurrent(x_encoded)
 
-        # ---------------------------------------------------------
-        # Temporal module over visit embeddings
-        # ---------------------------------------------------------
         if self.temporal_type == "transformer":
             if self.use_positional_embedding:
                 if T_max > self.max_seq_len:
@@ -297,22 +341,13 @@ class FusionRecurrentManyToMany(nn.Module):
                 pos_emb = self.positional_embedding(pos)  # [T_max, fusion_dim]
                 x_encoded = x_encoded + pos_emb.unsqueeze(0)
 
-            # key_padding_mask:
             # True means this position is padding and should be ignored.
             time_ids = torch.arange(T_max, device=device).unsqueeze(0)  # [1, T_max]
             key_padding_mask = time_ids >= lengths.unsqueeze(1)         # [B, T_max]
 
-            if self.transformer_causal_mask:
-                attn_mask = self._make_transformer_attention_mask(
-                    T=T_max,
-                    device=device,
-                )
-            else:
-                attn_mask = None
-
+            # No causal mask: each prefix contains only visits available up to target.
             out_padded = self.temporal(
                 x_encoded,
-                mask=attn_mask,
                 src_key_padding_mask=key_padding_mask,
             )
 
@@ -332,125 +367,91 @@ class FusionRecurrentManyToMany(nn.Module):
                 total_length=T_max,
             )
 
-        # ---------------------------------------------------------
-        # Classification
-        # ---------------------------------------------------------
-        out_padded = self.classifier_dropout(out_padded)
+        last_indices = lengths - 1
+        batch_indices = torch.arange(B, device=device)
+        last_out = out_padded[batch_indices, last_indices]
 
-        logits = self.classifier(out_padded)  # [B, T_max, num_classes]
+        last_out = self.classifier_dropout(last_out)
+        logits = self.classifier(last_out)  # [B, num_classes]
 
         return logits
+
+
 # -------------------------------------------------------------------
 # TRAIN / EVAL / PREDICT
 # -------------------------------------------------------------------
-def train_one_epoch_temporal_many_to_many(model, loader, optimizer, device, criterion):
+def train_one_epoch_temporal_many_to_one(model, loader, optimizer, device, criterion):
     model.train()
     total_loss = 0.0
-    total_tokens = 0
+    total_samples = 0
 
     for batch in loader:
         data_seqs = batch["data_seqs"]
-        y_padded = batch["y_padded"].to(device)
+        y = batch["y"].to(device)
         lengths = batch["lengths"].to(device)
-        mask = batch["mask"].to(device)
 
         optimizer.zero_grad()
 
-        logits = model(data_seqs, lengths)
-        B, T, C = logits.shape
+        logits = model(data_seqs, lengths)  # [B, C]
+        loss = criterion(logits, y)
 
-        loss = criterion(
-            logits.reshape(B * T, C),
-            y_padded.reshape(B * T)
-        )
         loss.backward()
         optimizer.step()
 
-        valid_tokens = mask.sum().item()
-        total_loss += loss.item() * valid_tokens
-        total_tokens += valid_tokens
+        batch_size = y.size(0)
+        total_loss += loss.item() * batch_size
+        total_samples += batch_size
 
-    avg_loss = total_loss / total_tokens if total_tokens > 0 else 0.0
+    avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
     return avg_loss
 
 
-
 @torch.no_grad()
-def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
+def evaluate_temporal_many_to_one(model, loader, device, criterion=None):
     model.eval()
 
     total_loss = 0.0
-    total_tokens = 0
+    total_samples = 0
 
     all_y_true = []
     all_y_pred = []
     all_prob_pos = []
 
-    # For conversion recall:
-    # among visits where is_conv_visit == 1,
-    # how many are predicted as class 1?
     conv_true_count = 0
     conv_pred_positive_count = 0
 
     for batch in loader:
         data_seqs = batch["data_seqs"]
-        y_padded = batch["y_padded"].to(device)
+        y = batch["y"].to(device)
         lengths = batch["lengths"].to(device)
-        mask = batch["mask"].to(device)
 
-        logits = model(data_seqs, lengths)
+        logits = model(data_seqs, lengths)  # [B, C]
         probs = F.softmax(logits, dim=-1)
         preds = logits.argmax(dim=-1)
 
-        B, T, C = logits.shape
-
         if criterion is not None:
-            loss = criterion(
-                logits.reshape(B * T, C),
-                y_padded.reshape(B * T)
-            )
-            valid_tokens = mask.sum().item()
-            total_loss += loss.item() * valid_tokens
-            total_tokens += valid_tokens
+            loss = criterion(logits, y)
+            batch_size = y.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
 
-        valid_y = y_padded[mask]
-        valid_preds = preds[mask]
-        valid_prob_pos = probs[..., 1][mask]
+        all_y_true.extend(y.cpu().numpy().tolist())
+        all_y_pred.extend(preds.cpu().numpy().tolist())
+        all_prob_pos.extend(probs[:, 1].cpu().numpy().tolist())
 
-        all_y_true.extend(valid_y.cpu().numpy().tolist())
-        all_y_pred.extend(valid_preds.cpu().numpy().tolist())
-        all_prob_pos.extend(valid_prob_pos.cpu().numpy().tolist())
+        for i, flag in enumerate(batch["target_is_conv_visit"]):
+            if flag is None:
+                continue
 
-        # ------------------------------------------------------------
-        # Conversion recall logic for temporal many-to-many setting
-        # ------------------------------------------------------------
-        # Build a [B, T] tensor where each position tells whether that
-        # visit is a conversion visit.
-        conv_flags = torch.zeros((B, T), dtype=torch.long, device=device)
+            if torch.is_tensor(flag):
+                flag = int(flag.item())
+            else:
+                flag = int(flag)
 
-        for b in range(B):
-            seq_len = int(lengths[b].item())
-
-            for t in range(seq_len):
-                data_t = data_seqs[b][t]
-
-                if hasattr(data_t, "is_conv_visit"):
-                    flag = data_t.is_conv_visit
-
-                    if torch.is_tensor(flag):
-                        flag = int(flag.item())
-                    else:
-                        flag = int(flag)
-
-                    conv_flags[b, t] = flag
-
-        valid_conv_flags = conv_flags[mask]
-        valid_conv_preds = preds[mask]
-
-        conv_mask = valid_conv_flags == 1
-
-        conv_true_count += int(conv_mask.sum().item())
-        conv_pred_positive_count += int((valid_conv_preds[conv_mask] == 1).sum().item())
+            if flag == 1:
+                conv_true_count += 1
+                if int(preds[i].cpu().item()) == 1:
+                    conv_pred_positive_count += 1
 
     if len(all_y_true) == 0:
         avg_loss = 0.0
@@ -481,7 +482,7 @@ def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
     all_y_pred = np.array(all_y_pred)
     all_prob_pos = np.array(all_prob_pos)
 
-    avg_loss = total_loss / total_tokens if (criterion is not None and total_tokens > 0) else 0.0
+    avg_loss = total_loss / total_samples if (criterion is not None and total_samples > 0) else 0.0
 
     acc = float((all_y_true == all_y_pred).mean())
 
@@ -536,39 +537,46 @@ def evaluate_temporal_many_to_many(model, loader, device, criterion=None):
         conv_recall,
     )
 
+
 @torch.no_grad()
-def predict_temporal_many_to_many(model, loader, device):
+def predict_temporal_many_to_one(model, loader, device):
     model.eval()
 
     records = []
 
     for batch in loader:
         data_seqs = batch["data_seqs"]
-        y_padded = batch["y_padded"].to(device)
+        y = batch["y"].to(device)
         lengths = batch["lengths"].to(device)
 
-        logits = model(data_seqs, lengths)   # [B, T, C]
+        logits = model(data_seqs, lengths)  # [B, C]
         probs = F.softmax(logits, dim=-1)
         preds = logits.argmax(dim=-1)
 
         B = len(data_seqs)
 
         for i in range(B):
-            seq_len = int(batch["lengths"][i].item())
+            seq_len = int(lengths[i].cpu().item())
 
-            for t in range(seq_len):
-                records.append({
-                    "ptid": batch["ptids"][i],
-                    "viscode": batch["viscodes"][i][t],
-                    "time_index": t,
-                    "seq_len": seq_len,
-                    "label": int(y_padded[i, t].cpu().item()),
-                    "prediction": int(preds[i, t].cpu().item()),
-                    "prob_class_0": float(probs[i, t, 0].cpu().item()),
-                    "prob_class_1": float(probs[i, t, 1].cpu().item()),
-                    "status": batch["status_seq"][i][t],
-                    "is_conv_visit": getattr(batch["data_seqs"][i][t], "is_conv_visit", None),
-                })
+            flag = batch["target_is_conv_visit"][i]
+            if torch.is_tensor(flag):
+                flag = int(flag.item())
+            elif flag is not None:
+                flag = int(flag)
+
+            records.append({
+                "ptid": batch["ptids"][i],
+                "target_viscode": batch["target_viscodes"][i],
+                "input_viscodes": ",".join([str(v) for v in batch["viscodes"][i]]),
+                "time_index": seq_len - 1,
+                "seq_len": seq_len,
+                "label": int(y[i].cpu().item()),
+                "prediction": int(preds[i].cpu().item()),
+                "prob_class_0": float(probs[i, 0].cpu().item()),
+                "prob_class_1": float(probs[i, 1].cpu().item()),
+                "status": batch["target_status"][i],
+                "is_conv_visit": flag,
+            })
 
     return records
 
@@ -779,7 +787,7 @@ def main(args, seed):
     if args.run_dir is not None:
         results_dir = args.run_dir + f"/{now}_{args.temporal_type}_{args.lr}_recdo{args.recurrent_dropout}_clfdo{args.dropout}_seed{args.seed}"
     else:
-        results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/{now+str(args.seed)}_temporal_many_to_many"
+        results_dir = f"./drive/MyDrive/thesis_gnn_results/mind_graph_exps/{now+str(args.seed)}_temporal_many_to_one"
 
     os.makedirs(results_dir, exist_ok=True)
 
@@ -884,11 +892,11 @@ def main(args, seed):
         print("Example train subject:", example_subject)
         print("Sorted visits:", [d.viscode for d in train_subject_to_visits[example_subject]])
 
-        train_temporal_samples = make_many_to_many_pyg_visit_samples(
+        train_temporal_samples = make_many_to_one_pyg_visit_samples(
             train_subject_to_visits
         )
 
-        test_temporal_samples = make_many_to_many_pyg_visit_samples(
+        test_temporal_samples = make_many_to_one_pyg_visit_samples(
             test_subject_to_visits
         )
 
@@ -900,8 +908,9 @@ def main(args, seed):
         print("Example sample:")
         print("  number of visits:", len(example["data_seq"]))
         print("  first visit x shape:", tuple(example["data_seq"][0].x.shape))
-        print("  y_seq shape:", tuple(example["y_seq"].shape))
-        print("  y_seq:", example["y_seq"].tolist())
+        print("  y shape:", tuple(example["y"].shape))
+        print("  y:", int(example["y"].item()))
+        print("  target_viscode:", example["target_viscode"])
 
         train_temporal_dataset = TemporalDataset(train_temporal_samples)
         test_temporal_dataset = TemporalDataset(test_temporal_samples)
@@ -915,7 +924,7 @@ def main(args, seed):
             shuffle=True,
             generator=g,
             num_workers=0,
-            collate_fn=temporal_collate_fn_pyg_many_to_many,
+            collate_fn=temporal_collate_fn_pyg_many_to_one,
             drop_last=True, # ???
         )
 
@@ -924,7 +933,7 @@ def main(args, seed):
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=0,
-            collate_fn=temporal_collate_fn_pyg_many_to_many,
+            collate_fn=temporal_collate_fn_pyg_many_to_one,
         )
 
         test_loader = DataLoader(
@@ -932,13 +941,13 @@ def main(args, seed):
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=0,
-            collate_fn=temporal_collate_fn_pyg_many_to_many,
+            collate_fn=temporal_collate_fn_pyg_many_to_one,
         )
 
         if use_es and early_stopping_data is not None:
             es_subject_to_visits = build_subject_to_visits(early_stopping_data)
 
-            es_temporal_samples = make_many_to_many_pyg_visit_samples(
+            es_temporal_samples = make_many_to_one_pyg_visit_samples(
                 es_subject_to_visits
             )
 
@@ -949,7 +958,7 @@ def main(args, seed):
                 batch_size=args.batch_size,
                 shuffle=False,
                 num_workers=0,
-                collate_fn=temporal_collate_fn_pyg_many_to_many,
+                collate_fn=temporal_collate_fn_pyg_many_to_one,
             )
         else:
             es_loader = None
@@ -958,7 +967,7 @@ def main(args, seed):
         batch = next(iter(train_loader))
 
         print("Batch number of subject sequences:", len(batch["data_seqs"]))
-        print("Batch y_padded shape:", tuple(batch["y_padded"].shape))
+        print("Batch y shape:", tuple(batch["y"].shape))
         print("Batch lengths shape:", tuple(batch["lengths"].shape))
         print("Batch mask shape:", tuple(batch["mask"].shape))
         print("First sample length:", int(batch["lengths"][0].item()))
@@ -1046,7 +1055,7 @@ def main(args, seed):
             key_prefix_to_strip=args.pretrained_encoder_key_prefix,
             strict=args.strict_pretrained_encoder,
         )
-        model = FusionRecurrentManyToMany(
+        model = FusionRecurrentManyToOne(
             fusion_encoder=fusion_encoder,
             temporal_type=args.temporal_type,
             hidden_dim=args.temporal_hidden_dim,
@@ -1055,13 +1064,12 @@ def main(args, seed):
             recurrent_dropout=args.recurrent_dropout,
             pre_recurrent_dropout=args.pre_recurrent_dropout,
             classifier_dropout=args.dropout,
-            rnn_nonlinearity="tanh",
-            transformer_causal_mask=True
+            rnn_nonlinearity="tanh"
         ).to(device)
         # print(model)
 
         # class weights from ALL visit labels
-        train_y = torch.cat([s["y_seq"] for s in train_temporal_samples], dim=0)
+        train_y = torch.stack([s["y"] for s in train_temporal_samples], dim=0)
         cw = compute_class_weight(
             class_weight="balanced",
             classes=np.unique(train_y.numpy()),
@@ -1072,11 +1080,10 @@ def main(args, seed):
             print("Using class weights in loss function.")
             print("Class weights:", cw)
             criterion = torch.nn.CrossEntropyLoss(
-                weight=torch.tensor(cw, dtype=torch.float, device=device),
-                ignore_index=-100
+                weight=torch.tensor(cw, dtype=torch.float, device=device)
             )
         else:
-            criterion = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            criterion = torch.nn.CrossEntropyLoss()
 
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -1103,23 +1110,23 @@ def main(args, seed):
                 return curr > (best + min_delta)
 
         for epoch in range(1, args.epochs + 1):
-            tr_loss = train_one_epoch_temporal_many_to_many(
+            tr_loss = train_one_epoch_temporal_many_to_one(
                 model, train_loader, optimizer, device, criterion
             )
 
             
             test_loss, test_acc, test_balanced_acc, f1_weighted, f1_macro, precision, recall, auc, auprc, conv_recall = \
-                evaluate_temporal_many_to_many(model, test_loader, device, criterion)
+                evaluate_temporal_many_to_one(model, test_loader, device, criterion)
 
             tr_after_epoch_loss, tr_acc, tr_balanced_acc, tr_f1_weighted, tr_f1_macro, tr_precision, tr_recall, tr_auc, tr_auprc, tr_conv_recall = \
-                evaluate_temporal_many_to_many(model, observation_train_loader, device, criterion)
+                evaluate_temporal_many_to_one(model, observation_train_loader, device, criterion)
 
             es_loss, es_acc, es_balanced_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_auprc, es_conv_recall = \
                 (float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), [float("nan"), float("nan")], [float("nan"), float("nan")], float("nan"), float("nan"), float("nan"))
 
             if use_es and es_loader is not None:
                 es_loss, es_acc, es_balanced_acc, es_f1_weighted, es_f1_macro, es_precision, es_recall, es_auc, es_auprc, es_conv_recall = \
-                    evaluate_temporal_many_to_many(model, es_loader, device, criterion)
+                    evaluate_temporal_many_to_one(model, es_loader, device, criterion)
 
                 monitor_value_map = {
                     "es_loss": es_loss,
@@ -1202,7 +1209,7 @@ def main(args, seed):
             print("Loaded best model state based on early stopping metric.")
 
         test_loss, test_acc, test_balanced_acc, f1_weighted, f1_macro, precision, recall, auc, auprc, conv_recall = \
-            evaluate_temporal_many_to_many(model, test_loader, device, criterion)
+            evaluate_temporal_many_to_one(model, test_loader, device, criterion)
 
         print(
             f"Final Test Metrics for Fold {fold+1}: "
@@ -1211,7 +1218,7 @@ def main(args, seed):
             f"Precision {precision} | Recall {recall} | AUC {auc:.3f}"
         )
 
-        prediction_records = predict_temporal_many_to_many(model, test_loader, device)
+        prediction_records = predict_temporal_many_to_one(model, test_loader, device)
 
         for rec in prediction_records:
             rec["fold"] = fold + 1
@@ -1364,7 +1371,7 @@ def main(args, seed):
 # CLI
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Temporal many-to-many LSTM with cross-validation")
+    parser = argparse.ArgumentParser(description="Temporal many-to-one model with cross-validation")
 
     parser.add_argument("--base_folder", type=str, default=".")
     parser.add_argument("--dataset_path", type=str, default=r"C:\Users\efeka\Documents\MIND_graphs\ADNI\MIND_graphs_CT_Vol\CT_Vol_graphs_complete_features_filtered_negative\pyg\CT_Vol_graphs_complete_features_filtered_negative.pt")

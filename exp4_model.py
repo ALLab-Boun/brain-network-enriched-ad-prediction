@@ -220,7 +220,7 @@ class FusionModel(nn.Module):
         zs = []
 
         if self.include_gnn:
-            if not self.separate_adj_features_instead_of_concat:
+            if not self.separate_adj_features_instead_of_concat: # The case where we use original node features for GNN branch
                 zs.append(self.gnn(x, edge_index, edge_attr=edge_attr, batch=batch))
             else:
                 x_adj_row = getattr(data, "x_adj_row", None)

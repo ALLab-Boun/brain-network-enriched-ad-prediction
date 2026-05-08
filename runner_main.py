@@ -68,87 +68,33 @@ def load_json_config(json_path):
 # ------------------------------------------------------------
 
 def parse_runner_args():
-    parser = argparse.ArgumentParser(
-        description="Run exp4_main_deterministic.py using arguments loaded from a JSON config."
-    )
+    parser = argparse.ArgumentParser(description="Run exp4_main_deterministic.py using arguments loaded from a JSON config.")
 
-    parser.add_argument(
-        "--json_config",
-        type=str,
-        required=True,
-        help="Path to the JSON config file."
-    )
-
-    parser.add_argument(
-        "--python_exe",
-        type=str,
-        # default=r"C:\dev\GitHub\graph-based-dementia-prediction\mind_env\Scripts\python.exe",
-        default=r"C:\Users\efeka\Documents\thesis_colab_match\Scripts\python.exe",
-        help="Python executable used to launch the training script."
-    )
-
-    parser.add_argument(
-        "--script_path",
-        type=str,
-        default="exp4_main_deterministic.py",
-        help="Path to the training script."
-    )
-
-    parser.add_argument(
-        "--seeds",
-        type=int,
-        nargs="+",
-        default=[7],
-        help="One or more seeds to run."
-    )
-
-    parser.add_argument(
-        "--stagger_seconds",
-        type=float,
-        default=5.0,
-        help="Delay between launching each seed."
-    )
+    parser.add_argument("--json_config", type=str, required=True, help="Path to the JSON config file.")
+    parser.add_argument("--python_exe", type=str, default=r"C:\Users\efeka\Documents\thesis_colab_match\Scripts\python.exe", help="Python executable used to launch the training script.")
+    parser.add_argument("--script_path", type=str, default="exp4_main_deterministic.py", help="Path to the training script.")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[7], help="One or more seeds to run.")
+    parser.add_argument("--stagger_seconds", type=float, default=5.0, help="Delay between launching each seed.")
 
     # Optional overrides for selected JSON fields
-
     parser.add_argument("--dataset", type=str, default=None, help="Override dataset from the JSON config.")
     parser.add_argument("--dataset_path", type=str, default=None, help="Override dataset_path from the JSON config.")
     parser.add_argument("--cross_val_pkl", type=str, default=None, help="Override cross_val_pkl from the JSON config.")
     parser.add_argument("--task", type=str, default=None, help="Override task from the JSON config (e.g., diagnosis vs. conversion).")
-
-    parser.add_argument(
-        "--run_dir",
-        type=str,
-        default=None,
-        help="Override run_dir from the JSON config."
-    )
-
-    parser.add_argument(
-        "--include_none",
-        action="store_true",
-        help="If set, pass None/null values as the string 'None'. Usually leave this off."
-    )
-
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=None,
-        help="Override epochs from the JSON config."
-    )
-    
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=None,
-        help="Override lr from the JSON config."
-    )
+    parser.add_argument("--run_dir", type=str, default=None, help="Override run_dir from the JSON config.")
+    parser.add_argument("--include_none", action="store_true", help="If set, pass None/null values as the string 'None'. Usually leave this off.")
+    parser.add_argument("--epochs", type=int, default=None, help="Override epochs from the JSON config.")
+    parser.add_argument("--lr", type=float, default=None, help="Override lr from the JSON config.")
+    parser.add_argument("--batch_size", type=int, default=None, help="Override batch_size from the JSON config.")
 
     # For temporal experiments, allow overriding temporal_type from the command line
     parser.add_argument("--temporal_type", type=str, default=None, help="Override temporal_type from the JSON config.")
     parser.add_argument("--dropout", type=float, default=None, help="Override dropout from the JSON config.") # dropout for temporal classifier
     parser.add_argument("--temporal_hidden_dim", type=int, default=None, help="Override temporal_hidden_dim from the JSON config.")
     parser.add_argument("--pretrained_encoder_path", type=str, default=None, help="Path to pretrained encoder checkpoint (optional)")
-    parser.add_argument("--es_delta", type=float, default=None, help="Override early stopping delta from the JSON config.")
+    parser.add_argument("--recurrent_dropout", type=float, default=None, help="Override recurrent dropout from the JSON config.")
+    parser.add_argument("--es_min_delta", type=float, default=None, help="Override early stopping min delta from the JSON config.")
+    parser.add_argument("--es_patience", type=int, default=None, help="Override early stopping patience from the JSON config.")
 
 
     return parser.parse_args()
@@ -185,12 +131,20 @@ def apply_overrides(config, runner_args):
         config["temporal_hidden_dim"] = runner_args.temporal_hidden_dim
     if runner_args.pretrained_encoder_path is not None:
         config["pretrained_encoder_path"] = runner_args.pretrained_encoder_path
+    if runner_args.recurrent_dropout is not None:
+        config["recurrent_dropout"] = runner_args.recurrent_dropout
+    if runner_args.batch_size is not None:
+        config["batch_size"] = runner_args.batch_size
 
     if runner_args.lr is not None:
         config["lr"] = runner_args.lr
 
-    if runner_args.es_delta is not None:
-        config["es_min_delta"] = runner_args.es_delta
+    if runner_args.es_min_delta is not None:
+        config["es_min_delta"] = runner_args.es_min_delta
+
+    if runner_args.es_patience is not None:
+        config["es_patience"] = runner_args.es_patience
+
 
     return config
 
