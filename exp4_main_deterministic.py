@@ -38,18 +38,32 @@ def seed_all(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 def build_model_kwargs_from_args(args, cog_in_dim):
-    gnn_kwargs = {
-        "dropout": args.gnn_dropout,
-        "hidden_dim": args.gnn_hidden_dim,
-        "use_pre_mlp": args.gnn_use_pre_mlp,
-        "cnn_input_add_flattened_node_features": args.gnn_cnn_input_add_flattened_node_features,
-        "add_output_skip": args.gnn_add_output_skip,
-        "layer_connectivity": args.gnn_layer_connectivity,
-        "norm_type": args.gnn_norm_type,
-        "num_layers": args.gnn_num_layers,
-        "layer": args.gnn_layer,
-        "readout": args.gnn_readout,
-        "graph_pool": args.gnn_graph_pool,
+    cortex_gnn_kwargs = {
+        "dropout": args.cortex_gnn_dropout,
+        "hidden_dim": args.cortex_gnn_hidden_dim,
+        "use_pre_mlp": args.cortex_gnn_use_pre_mlp,
+        "cnn_input_add_flattened_node_features": args.cortex_gnn_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.cortex_gnn_add_output_skip,
+        "layer_connectivity": args.cortex_gnn_layer_connectivity,
+        "norm_type": args.cortex_gnn_norm_type,
+        "num_layers": args.cortex_gnn_num_layers,
+        "layer": args.cortex_gnn_layer,
+        "readout": args.cortex_gnn_readout,
+        "graph_pool": args.cortex_gnn_graph_pool,
+    }
+
+    adjacency_gnn_kwargs = {
+        "dropout": args.adjacency_gnn_dropout,
+        "hidden_dim": args.adjacency_gnn_hidden_dim,
+        "use_pre_mlp": args.adjacency_gnn_use_pre_mlp,
+        "cnn_input_add_flattened_node_features": args.adjacency_gnn_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.adjacency_gnn_add_output_skip,
+        "layer_connectivity": args.adjacency_gnn_layer_connectivity,
+        "norm_type": args.adjacency_gnn_norm_type,
+        "num_layers": args.adjacency_gnn_num_layers,
+        "layer": args.adjacency_gnn_layer,
+        "readout": args.adjacency_gnn_readout,
+        "graph_pool": args.adjacency_gnn_graph_pool,
     }
 
     cortex_mlp_kwargs = {
@@ -97,12 +111,14 @@ def build_model_kwargs_from_args(args, cog_in_dim):
     }
 
     return {
-        "gnn_kwargs": gnn_kwargs,
+        "cortex_gnn_kwargs": cortex_gnn_kwargs,
+        "adjacency_gnn_kwargs": adjacency_gnn_kwargs,
         "cortex_mlp_kwargs": cortex_mlp_kwargs,
         "cog_mlp_kwargs": cog_mlp_kwargs,
         "adj_cnn_kwargs": adj_cnn_kwargs,
         "transformer_kwargs": transformer_kwargs,
     }
+
 
 # Main
 def main(args, seed):
@@ -822,21 +838,38 @@ if __name__ == "__main__":
     # GNN
     parser.add_argument("--include_cortex_gnn", action="store_true")
     parser.add_argument("--include_adjacency_gnn", action="store_true")
-    parser.add_argument("--gnn_dropout", type=float, default=0.5)
-    parser.add_argument("--gnn_hidden_dim", type=int, default=256)
+
     parser.add_argument("--edge_threshold", type=float, default=1.0)
-    parser.add_argument("--gnn_num_layers", type=int, default=2)
-    parser.add_argument("--gnn_layer", type=str, choices=["gcn", "sage", "gatv2", "gin"], default="gcn") # "gcn" | "sage" | "gatv2" | "gin"
     parser.add_argument("--add_adj_row_as_node_feature", action="store_true")
     parser.add_argument("--separate_adj_features_instead_of_concat", action="store_true")
     parser.add_argument("--add_weighted_degree_as_node_feature", action="store_true")
-    parser.add_argument("--gnn_use_pre_mlp", action="store_true")
-    parser.add_argument("--gnn_cnn_input_add_flattened_node_features", action="store_true")
-    parser.add_argument("--gnn_add_output_skip", action="store_true")
-    parser.add_argument("--gnn_layer_connectivity", type=str, choices=["stack", "skipcat", "skipsum"], default="skipsum")
-    parser.add_argument("--gnn_norm_type", type=str, default="layernorm")
-    parser.add_argument("--gnn_readout", type=str, choices=["cnn", "pool"], default="cnn")
-    parser.add_argument("--gnn_graph_pool", type=str, choices=["mean", "max", "sum", "mean_max"], default="mean_max")
+
+    # Cortex GNN
+    parser.add_argument("--cortex_gnn_dropout", type=float, default=0.2)
+    parser.add_argument("--cortex_gnn_hidden_dim", type=int, default=64)
+    parser.add_argument("--cortex_gnn_num_layers", type=int, default=1)
+    parser.add_argument("--cortex_gnn_layer", type=str, default="gcn")
+    parser.add_argument("--cortex_gnn_readout", type=str, default="cnn")
+    parser.add_argument("--cortex_gnn_graph_pool", type=str, default="mean_max")
+    parser.add_argument("--cortex_gnn_norm_type", type=str, default="layernorm")
+    parser.add_argument("--cortex_gnn_use_pre_mlp", action="store_true")
+    parser.add_argument("--cortex_gnn_cnn_input_add_flattened_node_features", action="store_true")
+    parser.add_argument("--cortex_gnn_add_output_skip", action="store_true")
+    parser.add_argument("--cortex_gnn_layer_connectivity", type=str, default="stack")
+
+
+    # Adjacency GNN
+    parser.add_argument("--adjacency_gnn_dropout", type=float, default=0.3)
+    parser.add_argument("--adjacency_gnn_hidden_dim", type=int, default=64)
+    parser.add_argument("--adjacency_gnn_num_layers", type=int, default=2)
+    parser.add_argument("--adjacency_gnn_layer", type=str, default="gcn")
+    parser.add_argument("--adjacency_gnn_readout", type=str, default="cnn")
+    parser.add_argument("--adjacency_gnn_graph_pool", type=str, default="mean")
+    parser.add_argument("--adjacency_gnn_norm_type", type=str, default="layernorm")
+    parser.add_argument("--adjacency_gnn_use_pre_mlp", action="store_true")
+    parser.add_argument("--adjacency_gnn_cnn_input_add_flattened_node_features", action="store_true")
+    parser.add_argument("--adjacency_gnn_add_output_skip", action="store_true")
+    parser.add_argument("--adjacency_gnn_layer_connectivity", type=str, default="stack")
 
     # Cortex MLP
     parser.add_argument("--include_cortex_mlp", action="store_true")

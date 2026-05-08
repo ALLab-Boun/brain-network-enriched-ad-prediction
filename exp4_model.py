@@ -81,7 +81,8 @@ class FusionModel(nn.Module):
 
         separate_adj_features_instead_of_concat: bool = False,
 
-        gnn_kwargs: dict | None = None,
+        cortex_gnn_kwargs: dict | None = None,
+        adjacency_gnn_kwargs: dict | None = None,
         cortex_mlp_kwargs: dict | None = None,
         cog_mlp_kwargs: dict | None = None,
         adj_cnn_kwargs: dict | None = None,
@@ -103,20 +104,22 @@ class FusionModel(nn.Module):
         self.dropout = dropout
 
 
-        gnn_kwargs = gnn_kwargs or {}
+        cortex_gnn_kwargs = cortex_gnn_kwargs or {}
+        adjacency_gnn_kwargs = adjacency_gnn_kwargs or {}
         cortex_mlp_kwargs = cortex_mlp_kwargs or {}
         cog_mlp_kwargs = cog_mlp_kwargs or {}
         adj_cnn_kwargs = adj_cnn_kwargs or {}
         transformer_kwargs = transformer_kwargs or {}
-        
-        gnn_cfg = gnn_kwargs
+
+        cortex_gnn_cfg = cortex_gnn_kwargs
+        adjacency_gnn_cfg = adjacency_gnn_kwargs
         cortex_mlp_cfg = cortex_mlp_kwargs
         cog_mlp_cfg = cog_mlp_kwargs
         adj_cnn_cfg = adj_cnn_kwargs
         transformer_cfg = transformer_kwargs
 
-        # Store configs for debugging / model summary / later inspection.
-        self.gnn_cfg = gnn_cfg
+        self.cortex_gnn_cfg = cortex_gnn_cfg
+        self.adjacency_gnn_cfg = adjacency_gnn_cfg
         self.cortex_mlp_cfg = cortex_mlp_cfg
         self.cog_mlp_cfg = cog_mlp_cfg
         self.adj_cnn_cfg = adj_cnn_cfg
@@ -129,13 +132,13 @@ class FusionModel(nn.Module):
         if include_cortex_gnn:
             self.cortex_gnn = self._make_gnn_branch(
                 node_in_dim=node_in_dim,
-                gnn_cfg=gnn_cfg,
+                gnn_cfg=cortex_gnn_cfg,
             )
 
         if include_adjacency_gnn:
             self.adjacency_gnn = self._make_gnn_branch(
                 node_in_dim=num_nodes,
-                gnn_cfg=gnn_cfg,
+                gnn_cfg=adjacency_gnn_cfg,
             )
 
         if include_cnn:
@@ -214,6 +217,7 @@ class FusionModel(nn.Module):
 
         if include_adjacency_gnn:
             concat_dim += 128
+
         if include_cnn:
             concat_dim += 128
 
