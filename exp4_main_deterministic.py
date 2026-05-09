@@ -86,17 +86,17 @@ def build_model_kwargs_from_args(args, cog_in_dim):
         "cog_in_dim": cog_in_dim,
     }
 
-    adj_cnn_kwargs = {
-        "dropout": args.adj_cnn_dropout,
-        "conv_channels": args.adj_cnn_conv_channels,
-        "kernel_sizes": args.adj_cnn_kernel_sizes,
-        "strides": args.adj_cnn_strides,
-        "pool_types": args.adj_cnn_pool_types,
-        "pool_kernel_sizes": args.adj_cnn_pool_kernel_sizes,
-        "negative_slope": args.adj_cnn_negative_slope,
-        "norm_type": args.adj_cnn_norm_type,
-        "group_norm_groups": args.adj_cnn_group_norm_groups,
-        "readout": args.adj_cnn_readout,
+    adjacency_cnn_kwargs = {
+        "dropout": args.adjacency_cnn_dropout,
+        "conv_channels": args.adjacency_cnn_conv_channels,
+        "kernel_sizes": args.adjacency_cnn_kernel_sizes,
+        "strides": args.adjacency_cnn_strides,
+        "pool_types": args.adjacency_cnn_pool_types,
+        "pool_kernel_sizes": args.adjacency_cnn_pool_kernel_sizes,
+        "negative_slope": args.adjacency_cnn_negative_slope,
+        "norm_type": args.adjacency_cnn_norm_type,
+        "group_norm_groups": args.adjacency_cnn_group_norm_groups,
+        "readout": args.adjacency_cnn_readout,
     }
 
 
@@ -127,7 +127,7 @@ def build_model_kwargs_from_args(args, cog_in_dim):
         "adjacency_gnn_kwargs": adjacency_gnn_kwargs,
         "cortex_mlp_kwargs": cortex_mlp_kwargs,
         "cog_mlp_kwargs": cog_mlp_kwargs,
-        "adj_cnn_kwargs": adj_cnn_kwargs,
+        "adjacency_cnn_kwargs": adjacency_cnn_kwargs,
         "cortex_transformer_kwargs": cortex_transformer_kwargs,
         "adjacency_transformer_kwargs": adjacency_transformer_kwargs,
     }
@@ -359,8 +359,8 @@ def main(args, seed):
                 
                 include_cortex_gnn=args.include_cortex_gnn,
                 include_adjacency_gnn=args.include_adjacency_gnn,
-                include_cnn=args.include_cnn,
-                include_mlp=args.include_cortex_mlp,
+                include_adjacency_cnn=args.include_adjacency_cnn,
+                include_cortex_mlp=args.include_cortex_mlp,
                 include_cog_mlp=args.include_cog_mlp,
                 include_cortex_transformer=args.include_cortex_transformer,
                 include_adjacency_transformer=args.include_adjacency_transformer,
@@ -844,8 +844,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--dropout", type=float, default = 0.5) # classifier head dropout
-    parser.add_argument("--include_cnn", action="store_true")
-    parser.add_argument("--include_transformer", action="store_true")
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
     parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
 
@@ -853,8 +851,10 @@ if __name__ == "__main__":
     parser.add_argument("--include_cortex_mlp", action="store_true")
     parser.add_argument("--include_cortex_gnn", action="store_true")
     parser.add_argument("--include_cortex_transformer", action="store_true")
+    parser.add_argument("--include_adjacency_cnn", action="store_true")
     parser.add_argument("--include_adjacency_gnn", action="store_true")
     parser.add_argument("--include_adjacency_transformer", action="store_true")
+    parser.add_argument("--include_cog_mlp", action="store_true")
 
     parser.add_argument("--edge_threshold", type=float, default=1.0)
     parser.add_argument("--add_adj_row_as_node_feature", action="store_true")
@@ -901,17 +901,18 @@ if __name__ == "__main__":
     parser.add_argument("--adjacency_transformer_cnn_input_add_flattened_node_features", action="store_true")
     parser.add_argument("--adjacency_transformer_add_output_skip", action="store_true")
 
+
     # Adjacency CNN
-    parser.add_argument("--adj_cnn_dropout", type=float, default=0.5)
-    parser.add_argument("--adj_cnn_conv_channels", type=int, nargs="+", default=[32, 256, 2048])
-    parser.add_argument("--adj_cnn_kernel_sizes", type=int, nargs="+", default=[7, 5, 3])
-    parser.add_argument("--adj_cnn_strides", type=int, nargs="+", default=[2, 2, 1])
-    parser.add_argument("--adj_cnn_pool_types", type=str, nargs="+", default=["max", "max", "avg"])
-    parser.add_argument("--adj_cnn_pool_kernel_sizes", type=int, nargs="+", default=[4, 4, 4])
-    parser.add_argument("--adj_cnn_negative_slope", type=float, default=0.01)
-    parser.add_argument("--adj_cnn_norm_type", type=str, default=None)
-    parser.add_argument("--adj_cnn_group_norm_groups", type=int, default=8)
-    parser.add_argument("--adj_cnn_readout", type=str, choices=["flatten", "gap", "gmp", "gap_gmp"], default="flatten")   
+    parser.add_argument("--adjacency_cnn_dropout", type=float, default=0.5)
+    parser.add_argument("--adjacency_cnn_conv_channels", type=int, nargs="+", default=[32, 256, 2048])
+    parser.add_argument("--adjacency_cnn_kernel_sizes", type=int, nargs="+", default=[7, 5, 3])
+    parser.add_argument("--adjacency_cnn_strides", type=int, nargs="+", default=[2, 2, 1])
+    parser.add_argument("--adjacency_cnn_pool_types", type=str, nargs="+", default=["max", "max", "avg"])
+    parser.add_argument("--adjacency_cnn_pool_kernel_sizes", type=int, nargs="+", default=[4, 4, 4])
+    parser.add_argument("--adjacency_cnn_negative_slope", type=float, default=0.01)
+    parser.add_argument("--adjacency_cnn_norm_type", type=str, default=None)
+    parser.add_argument("--adjacency_cnn_group_norm_groups", type=int, default=8)
+    parser.add_argument("--adjacency_cnn_readout", type=str, choices=["flatten", "gap", "gmp", "gap_gmp"], default="flatten")
 
     # Adjacency GNN
     parser.add_argument("--adjacency_gnn_dropout", type=float, default=0.3)
@@ -927,7 +928,6 @@ if __name__ == "__main__":
     parser.add_argument("--adjacency_gnn_layer_connectivity", type=str, default="stack")
 
     # Cognitive MLP
-    parser.add_argument("--include_cog_mlp", action="store_true")
     parser.add_argument("--cog_hidden_dim", type=int, default=128)
     parser.add_argument("--cog_mlp_dropout", type=float, default=0.5)
     parser.add_argument("--cog_mlp_width_mode", type=str, default="constant")

@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.GNN import GNNBranch_wo_pooling_with_1dcnn_flattened, GNNBranch_with_pooling
+from model.GNN import GNNBranch_with_1dcnn_flattened, GNNBranch_with_pooling
 from model.CortexMLP import MLPCorticalBranch
 from model.AdjacencyCNN import CNNAdjacency1D_Pool
-from model.CortexTransformer import TransformerCorticalBranch_with_1dcnn_flattened
+from model.CortexTransformer import TransformerBranch_with_1dcnn_flattened
 from model.CognitiveMLP import MLPCogBranch
 
 
@@ -27,7 +27,7 @@ class FusionModel(nn.Module):
     """
     def _make_gnn_branch(self, node_in_dim, gnn_cfg):
         if gnn_cfg["readout"] == "cnn":
-            return GNNBranch_wo_pooling_with_1dcnn_flattened(
+            return GNNBranch_with_1dcnn_flattened(
                 node_in_dim=node_in_dim,
                 hidden_dim=gnn_cfg["hidden_dim"],
                 out_dim=128,
@@ -74,8 +74,8 @@ class FusionModel(nn.Module):
 
         include_cortex_gnn: bool = True,
         include_adjacency_gnn: bool = False,   
-        include_cnn: bool = False,
-        include_mlp: bool = True,
+        include_adjacency_cnn: bool = False,
+        include_cortex_mlp: bool = True,
         include_cortex_transformer: bool = False,
         include_adjacency_transformer: bool = False,
         include_cog_mlp: bool = False,
@@ -86,7 +86,7 @@ class FusionModel(nn.Module):
         adjacency_gnn_kwargs: dict | None = None,
         cortex_mlp_kwargs: dict | None = None,
         cog_mlp_kwargs: dict | None = None,
-        adj_cnn_kwargs: dict | None = None,
+        adjacency_cnn_kwargs: dict | None = None,
         cortex_transformer_kwargs: dict | None = None,
         adjacency_transformer_kwargs: dict | None = None,
     ):
@@ -96,8 +96,8 @@ class FusionModel(nn.Module):
      
         self.include_cortex_gnn = include_cortex_gnn
         self.include_adjacency_gnn = include_adjacency_gnn
-        self.include_cnn = include_cnn
-        self.include_mlp = include_mlp
+        self.include_adjacency_cnn = include_adjacency_cnn
+        self.include_cortex_mlp = include_cortex_mlp
         self.include_cortex_transformer = include_cortex_transformer
         self.include_adjacency_transformer = include_adjacency_transformer        
         self.include_cog_mlp = include_cog_mlp
@@ -109,7 +109,7 @@ class FusionModel(nn.Module):
         cortex_mlp_kwargs = cortex_mlp_kwargs or {}
         cortex_gnn_kwargs = cortex_gnn_kwargs or {}
         cortex_transformer_kwargs = cortex_transformer_kwargs or {}
-        adj_cnn_kwargs = adj_cnn_kwargs or {}
+        adjacency_cnn_kwargs = adjacency_cnn_kwargs or {}
         adjacency_gnn_kwargs = adjacency_gnn_kwargs or {}
         adjacency_transformer_kwargs = adjacency_transformer_kwargs or {}
         cog_mlp_kwargs = cog_mlp_kwargs or {}
@@ -117,7 +117,7 @@ class FusionModel(nn.Module):
         cortex_mlp_cfg = cortex_mlp_kwargs
         cortex_gnn_cfg = cortex_gnn_kwargs
         cortex_transformer_cfg = cortex_transformer_kwargs
-        adj_cnn_cfg = adj_cnn_kwargs
+        adjacency_cnn_cfg = adjacency_cnn_kwargs
         adjacency_gnn_cfg = adjacency_gnn_kwargs
         adjacency_transformer_cfg = adjacency_transformer_kwargs
         cog_mlp_cfg = cog_mlp_kwargs
@@ -128,7 +128,7 @@ class FusionModel(nn.Module):
         self.adjacency_gnn_cfg = adjacency_gnn_cfg
         self.cortex_mlp_cfg = cortex_mlp_cfg
         self.cog_mlp_cfg = cog_mlp_cfg
-        self.adj_cnn_cfg = adj_cnn_cfg
+        self.adjacency_cnn_cfg = adjacency_cnn_cfg
 
         # ------------------------------------------------------------------
         # Branch construction
@@ -146,23 +146,23 @@ class FusionModel(nn.Module):
                 gnn_cfg=adjacency_gnn_cfg,
             )
 
-        if include_cnn:
+        if include_adjacency_cnn:
             self.cnn = CNNAdjacency1D_Pool(
                 num_nodes,
                 out_dim=128,
-                dropout=adj_cnn_cfg["dropout"],
-                conv_channels=adj_cnn_cfg["conv_channels"],
-                kernel_sizes=adj_cnn_cfg["kernel_sizes"],
-                strides=adj_cnn_cfg["strides"],
-                pool_types=adj_cnn_cfg["pool_types"],
-                pool_kernel_sizes=adj_cnn_cfg["pool_kernel_sizes"],
-                negative_slope=adj_cnn_cfg["negative_slope"],
-                norm_type=adj_cnn_cfg["norm_type"],
-                group_norm_groups=adj_cnn_cfg["group_norm_groups"],
-                readout=adj_cnn_cfg["readout"],
+                dropout=adjacency_cnn_cfg["dropout"],
+                conv_channels=adjacency_cnn_cfg["conv_channels"],
+                kernel_sizes=adjacency_cnn_cfg["kernel_sizes"],
+                strides=adjacency_cnn_cfg["strides"],
+                pool_types=adjacency_cnn_cfg["pool_types"],
+                pool_kernel_sizes=adjacency_cnn_cfg["pool_kernel_sizes"],
+                negative_slope=adjacency_cnn_cfg["negative_slope"],
+                norm_type=adjacency_cnn_cfg["norm_type"],
+                group_norm_groups=adjacency_cnn_cfg["group_norm_groups"],
+                readout=adjacency_cnn_cfg["readout"],
             )
 
-        if include_mlp:
+        if include_cortex_mlp:
             self.mlp = MLPCorticalBranch(
                 num_nodes,
                 node_in_dim,
@@ -178,7 +178,7 @@ class FusionModel(nn.Module):
             )
 
         if include_cortex_transformer:
-            self.cortex_transformer = TransformerCorticalBranch_with_1dcnn_flattened(
+            self.cortex_transformer = TransformerBranch_with_1dcnn_flattened(
                 num_nodes,
                 node_in_dim,
                 hidden_dim=cortex_transformer_cfg["hidden_dim"],
@@ -195,7 +195,7 @@ class FusionModel(nn.Module):
             )
 
         if include_adjacency_transformer:
-            self.adjacency_transformer = TransformerCorticalBranch_with_1dcnn_flattened(
+            self.adjacency_transformer = TransformerBranch_with_1dcnn_flattened(
                 num_nodes,
                 num_nodes,
                 hidden_dim=adjacency_transformer_cfg["hidden_dim"],
@@ -233,10 +233,10 @@ class FusionModel(nn.Module):
         if include_adjacency_gnn:
             concat_dim += 128
 
-        if include_cnn:
+        if include_adjacency_cnn:
             concat_dim += 128
 
-        if include_mlp:
+        if include_cortex_mlp:
             concat_dim += 128
 
         if include_cortex_transformer:
@@ -307,10 +307,10 @@ class FusionModel(nn.Module):
                 )
             )
 
-        if self.include_cnn:
+        if self.include_adjacency_cnn:
             if adj is None:
                 raise ValueError(
-                    "include_cnn=True, but data.weighted_adj_matrix is missing."
+                    "include_adjacency_cnn=True, but data.weighted_adj_matrix is missing."
                 )
 
             if adj.dim() == 2:
@@ -322,7 +322,7 @@ class FusionModel(nn.Module):
 
             zs.append(self.cnn(adj))
 
-        if self.include_mlp:
+        if self.include_cortex_mlp:
             from torch_geometric.utils import to_dense_batch
 
             x_dense, _ = to_dense_batch(
