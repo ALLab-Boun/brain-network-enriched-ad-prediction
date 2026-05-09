@@ -99,15 +99,27 @@ def build_model_kwargs_from_args(args, cog_in_dim):
         "readout": args.adj_cnn_readout,
     }
 
-    transformer_kwargs = {
-        "dropout": args.cort_transformer_dropout,
+
+    cortex_transformer_kwargs = {
+    "dropout": args.cortex_transformer_dropout,
+    "pos_encoding_type": args.pos_encoding_type,
+    "lpe_dim": args.lpe_dim,
+    "hidden_dim": args.cortex_transformer_hidden_dim,
+    "num_layers": args.cortex_transformer_num_layers,
+    "num_heads": args.cortex_transformer_num_heads,
+    "cnn_input_add_flattened_node_features": args.cortex_transformer_cnn_input_add_flattened_node_features,
+    "add_output_skip": args.cortex_transformer_add_output_skip,
+    }
+
+    adjacency_transformer_kwargs = {
+        "dropout": args.adjacency_transformer_dropout,
         "pos_encoding_type": args.pos_encoding_type,
         "lpe_dim": args.lpe_dim,
-        "hidden_dim": args.cortex_transformer_hidden_dim,
-        "num_layers": args.cortex_transformer_num_layers,
-        "num_heads": args.cortex_transformer_num_heads,
-        "cnn_input_add_flattened_node_features": args.cortex_transformer_cnn_input_add_flattened_node_features,
-        "add_output_skip": args.cortex_transformer_add_output_skip,
+        "hidden_dim": args.adjacency_transformer_hidden_dim,
+        "num_layers": args.adjacency_transformer_num_layers,
+        "num_heads": args.adjacency_transformer_num_heads,
+        "cnn_input_add_flattened_node_features": args.adjacency_transformer_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.adjacency_transformer_add_output_skip,
     }
 
     return {
@@ -116,7 +128,8 @@ def build_model_kwargs_from_args(args, cog_in_dim):
         "cortex_mlp_kwargs": cortex_mlp_kwargs,
         "cog_mlp_kwargs": cog_mlp_kwargs,
         "adj_cnn_kwargs": adj_cnn_kwargs,
-        "transformer_kwargs": transformer_kwargs,
+        "cortex_transformer_kwargs": cortex_transformer_kwargs,
+        "adjacency_transformer_kwargs": adjacency_transformer_kwargs,
     }
 
 
@@ -348,8 +361,9 @@ def main(args, seed):
                 include_adjacency_gnn=args.include_adjacency_gnn,
                 include_cnn=args.include_cnn,
                 include_mlp=args.include_cortex_mlp,
-                include_transformer=args.include_transformer,
                 include_cog_mlp=args.include_cog_mlp,
+                include_cortex_transformer=args.include_cortex_transformer,
+                include_adjacency_transformer=args.include_adjacency_transformer,
 
                 separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
 
@@ -835,14 +849,28 @@ if __name__ == "__main__":
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
     parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
 
-    # GNN
+    # Branch inclusion args
+    parser.add_argument("--include_cortex_mlp", action="store_true")
     parser.add_argument("--include_cortex_gnn", action="store_true")
+    parser.add_argument("--include_cortex_transformer", action="store_true")
     parser.add_argument("--include_adjacency_gnn", action="store_true")
+    parser.add_argument("--include_adjacency_transformer", action="store_true")
 
     parser.add_argument("--edge_threshold", type=float, default=1.0)
     parser.add_argument("--add_adj_row_as_node_feature", action="store_true")
     parser.add_argument("--separate_adj_features_instead_of_concat", action="store_true")
     parser.add_argument("--add_weighted_degree_as_node_feature", action="store_true")
+
+
+    # Cortex MLP
+    parser.add_argument("--cortex_mlp_dropout", type=float, default=0.5)
+    parser.add_argument("--cortex_mlp_hidden_dim", type=int, default=256)
+    parser.add_argument("--cortex_mlp_use_residual", action="store_true")
+    parser.add_argument("--cortex_mlp_activation", type=str, choices=["relu", "gelu", "elu", "leakyrelu"], default="leakyrelu")
+    parser.add_argument("--cortex_mlp_use_layernorm", action="store_true")
+    parser.add_argument("--cortex_mlp_num_layers", type=int, default=1)
+    parser.add_argument("--cortex_mlp_hidden_dims", type=int, nargs="+", default=None)
+    parser.add_argument("--cortex_mlp_width_mode", type=str, default="constant" )
 
     # Cortex GNN
     parser.add_argument("--cortex_gnn_dropout", type=float, default=0.2)
@@ -857,6 +885,33 @@ if __name__ == "__main__":
     parser.add_argument("--cortex_gnn_add_output_skip", action="store_true")
     parser.add_argument("--cortex_gnn_layer_connectivity", type=str, default="stack")
 
+    # Cortex Transformer
+    parser.add_argument("--cortex_transformer_dropout", type=float, default=0.5)
+    parser.add_argument("--cortex_transformer_hidden_dim", type=int, default=128)
+    parser.add_argument("--cortex_transformer_num_layers", type=int, default=2)
+    parser.add_argument("--cortex_transformer_num_heads", type=int, default=4)
+    parser.add_argument("--cortex_transformer_cnn_input_add_flattened_node_features", action="store_true")
+    parser.add_argument("--cortex_transformer_add_output_skip", action="store_true")
+
+    # Adjacency Transformer
+    parser.add_argument("--adjacency_transformer_dropout", type=float, default=0.5)
+    parser.add_argument("--adjacency_transformer_hidden_dim", type=int, default=128)
+    parser.add_argument("--adjacency_transformer_num_layers", type=int, default=2)
+    parser.add_argument("--adjacency_transformer_num_heads", type=int, default=4)
+    parser.add_argument("--adjacency_transformer_cnn_input_add_flattened_node_features", action="store_true")
+    parser.add_argument("--adjacency_transformer_add_output_skip", action="store_true")
+
+    # Adjacency CNN
+    parser.add_argument("--adj_cnn_dropout", type=float, default=0.5)
+    parser.add_argument("--adj_cnn_conv_channels", type=int, nargs="+", default=[32, 256, 2048])
+    parser.add_argument("--adj_cnn_kernel_sizes", type=int, nargs="+", default=[7, 5, 3])
+    parser.add_argument("--adj_cnn_strides", type=int, nargs="+", default=[2, 2, 1])
+    parser.add_argument("--adj_cnn_pool_types", type=str, nargs="+", default=["max", "max", "avg"])
+    parser.add_argument("--adj_cnn_pool_kernel_sizes", type=int, nargs="+", default=[4, 4, 4])
+    parser.add_argument("--adj_cnn_negative_slope", type=float, default=0.01)
+    parser.add_argument("--adj_cnn_norm_type", type=str, default=None)
+    parser.add_argument("--adj_cnn_group_norm_groups", type=int, default=8)
+    parser.add_argument("--adj_cnn_readout", type=str, choices=["flatten", "gap", "gmp", "gap_gmp"], default="flatten")   
 
     # Adjacency GNN
     parser.add_argument("--adjacency_gnn_dropout", type=float, default=0.3)
@@ -871,37 +926,6 @@ if __name__ == "__main__":
     parser.add_argument("--adjacency_gnn_add_output_skip", action="store_true")
     parser.add_argument("--adjacency_gnn_layer_connectivity", type=str, default="stack")
 
-    # Cortex MLP
-    parser.add_argument("--include_cortex_mlp", action="store_true")
-    parser.add_argument("--cortex_mlp_dropout", type=float, default=0.5)
-    parser.add_argument("--cortex_mlp_hidden_dim", type=int, default=256)
-    parser.add_argument("--cortex_mlp_use_residual", action="store_true")
-    parser.add_argument("--cortex_mlp_activation", type=str, choices=["relu", "gelu", "elu", "leakyrelu"], default="leakyrelu")
-    parser.add_argument("--cortex_mlp_use_layernorm", action="store_true")
-    parser.add_argument("--cortex_mlp_num_layers", type=int, default=1)
-    parser.add_argument("--cortex_mlp_hidden_dims", type=int, nargs="+", default=None)
-    parser.add_argument("--cortex_mlp_width_mode", type=str, default="constant" )
-
-    # Adjacency CNN
-    parser.add_argument("--adj_cnn_dropout", type=float, default=0.5)
-    parser.add_argument("--adj_cnn_conv_channels", type=int, nargs="+", default=[32, 256, 2048])
-    parser.add_argument("--adj_cnn_kernel_sizes", type=int, nargs="+", default=[7, 5, 3])
-    parser.add_argument("--adj_cnn_strides", type=int, nargs="+", default=[2, 2, 1])
-    parser.add_argument("--adj_cnn_pool_types", type=str, nargs="+", default=["max", "max", "avg"])
-    parser.add_argument("--adj_cnn_pool_kernel_sizes", type=int, nargs="+", default=[4, 4, 4])
-    parser.add_argument("--adj_cnn_negative_slope", type=float, default=0.01)
-    parser.add_argument("--adj_cnn_norm_type", type=str, default=None)
-    parser.add_argument("--adj_cnn_group_norm_groups", type=int, default=8)
-    parser.add_argument("--adj_cnn_readout", type=str, choices=["flatten", "gap", "gmp", "gap_gmp"], default="flatten")   
-
-    # Cortex Transformer
-    parser.add_argument("--cort_transformer_dropout", type=float, default=0.5)
-    parser.add_argument("--cortex_transformer_hidden_dim", type=int, default=128)
-    parser.add_argument("--cortex_transformer_num_layers", type=int, default=2)
-    parser.add_argument("--cortex_transformer_num_heads", type=int, default=4)
-    parser.add_argument("--cortex_transformer_cnn_input_add_flattened_node_features", action="store_true")
-    parser.add_argument("--cortex_transformer_add_output_skip", action="store_true")
-
     # Cognitive MLP
     parser.add_argument("--include_cog_mlp", action="store_true")
     parser.add_argument("--cog_hidden_dim", type=int, default=128)
@@ -911,8 +935,8 @@ if __name__ == "__main__":
     parser.add_argument("--cog_mlp_use_residual_to_last", action="store_true")
 
     # positional encoding (used in transformer branch, and optionally can be added to GNN node features as well if adapted)
-    parser.add_argument("--add_laplacian_pe", action="store_true")
     parser.add_argument("--pos_encoding_type", type=str, choices=["none", "sinusoidal", "learnable", "lpe"], default="learnable")
+    parser.add_argument("--add_laplacian_pe", action="store_true")
     parser.add_argument("--lpe_dim", type=int, default=8)
 
     # other model configs and hyperparams

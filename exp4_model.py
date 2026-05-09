@@ -76,7 +76,8 @@ class FusionModel(nn.Module):
         include_adjacency_gnn: bool = False,   
         include_cnn: bool = False,
         include_mlp: bool = True,
-        include_transformer: bool = False,
+        include_cortex_transformer: bool = False,
+        include_adjacency_transformer: bool = False,
         include_cog_mlp: bool = False,
 
         separate_adj_features_instead_of_concat: bool = False,
@@ -86,7 +87,8 @@ class FusionModel(nn.Module):
         cortex_mlp_kwargs: dict | None = None,
         cog_mlp_kwargs: dict | None = None,
         adj_cnn_kwargs: dict | None = None,
-        transformer_kwargs: dict | None = None,
+        cortex_transformer_kwargs: dict | None = None,
+        adjacency_transformer_kwargs: dict | None = None,
     ):
         super().__init__()
 
@@ -96,34 +98,37 @@ class FusionModel(nn.Module):
         self.include_adjacency_gnn = include_adjacency_gnn
         self.include_cnn = include_cnn
         self.include_mlp = include_mlp
-        self.include_transformer = include_transformer
+        self.include_cortex_transformer = include_cortex_transformer
+        self.include_adjacency_transformer = include_adjacency_transformer        
         self.include_cog_mlp = include_cog_mlp
 
         self.separate_adj_features_instead_of_concat = separate_adj_features_instead_of_concat
 
         self.dropout = dropout
 
-
-        cortex_gnn_kwargs = cortex_gnn_kwargs or {}
-        adjacency_gnn_kwargs = adjacency_gnn_kwargs or {}
         cortex_mlp_kwargs = cortex_mlp_kwargs or {}
-        cog_mlp_kwargs = cog_mlp_kwargs or {}
+        cortex_gnn_kwargs = cortex_gnn_kwargs or {}
+        cortex_transformer_kwargs = cortex_transformer_kwargs or {}
         adj_cnn_kwargs = adj_cnn_kwargs or {}
-        transformer_kwargs = transformer_kwargs or {}
+        adjacency_gnn_kwargs = adjacency_gnn_kwargs or {}
+        adjacency_transformer_kwargs = adjacency_transformer_kwargs or {}
+        cog_mlp_kwargs = cog_mlp_kwargs or {}
 
-        cortex_gnn_cfg = cortex_gnn_kwargs
-        adjacency_gnn_cfg = adjacency_gnn_kwargs
         cortex_mlp_cfg = cortex_mlp_kwargs
-        cog_mlp_cfg = cog_mlp_kwargs
+        cortex_gnn_cfg = cortex_gnn_kwargs
+        cortex_transformer_cfg = cortex_transformer_kwargs
         adj_cnn_cfg = adj_cnn_kwargs
-        transformer_cfg = transformer_kwargs
+        adjacency_gnn_cfg = adjacency_gnn_kwargs
+        adjacency_transformer_cfg = adjacency_transformer_kwargs
+        cog_mlp_cfg = cog_mlp_kwargs
 
+        self.cortex_transformer_cfg = cortex_transformer_cfg
+        self.adjacency_transformer_cfg = adjacency_transformer_cfg
         self.cortex_gnn_cfg = cortex_gnn_cfg
         self.adjacency_gnn_cfg = adjacency_gnn_cfg
         self.cortex_mlp_cfg = cortex_mlp_cfg
         self.cog_mlp_cfg = cog_mlp_cfg
         self.adj_cnn_cfg = adj_cnn_cfg
-        self.transformer_cfg = transformer_cfg
 
         # ------------------------------------------------------------------
         # Branch construction
@@ -172,29 +177,39 @@ class FusionModel(nn.Module):
                 width_mode=cortex_mlp_cfg["width_mode"],
             )
 
-        if include_transformer:
-            transformer_node_in_dim = (
-                num_nodes
-                if self.separate_adj_features_instead_of_concat
-                else node_in_dim
-            )
-
-            self.transformer = TransformerCorticalBranch_with_1dcnn_flattened(
+        if include_cortex_transformer:
+            self.cortex_transformer = TransformerCorticalBranch_with_1dcnn_flattened(
                 num_nodes,
-                transformer_node_in_dim,
-                hidden_dim=transformer_cfg["hidden_dim"],
+                node_in_dim,
+                hidden_dim=cortex_transformer_cfg["hidden_dim"],
                 out_dim=128,
-                num_heads=transformer_cfg["num_heads"],
-                num_layers=transformer_cfg["num_layers"],
-                dropout=transformer_cfg["dropout"],
-                pos_encoding_type=transformer_cfg["pos_encoding_type"],
-                lpe_dim=transformer_cfg["lpe_dim"],
-                cnn_input_add_flattened_node_features=transformer_cfg[
+                num_heads=cortex_transformer_cfg["num_heads"],
+                num_layers=cortex_transformer_cfg["num_layers"],
+                dropout=cortex_transformer_cfg["dropout"],
+                pos_encoding_type=cortex_transformer_cfg["pos_encoding_type"],
+                lpe_dim=cortex_transformer_cfg["lpe_dim"],
+                cnn_input_add_flattened_node_features=cortex_transformer_cfg[
                     "cnn_input_add_flattened_node_features"
                 ],
-                add_output_skip=transformer_cfg["add_output_skip"],
+                add_output_skip=cortex_transformer_cfg["add_output_skip"],
             )
 
+        if include_adjacency_transformer:
+            self.adjacency_transformer = TransformerCorticalBranch_with_1dcnn_flattened(
+                num_nodes,
+                num_nodes,
+                hidden_dim=adjacency_transformer_cfg["hidden_dim"],
+                out_dim=128,
+                num_heads=adjacency_transformer_cfg["num_heads"],
+                num_layers=adjacency_transformer_cfg["num_layers"],
+                dropout=adjacency_transformer_cfg["dropout"],
+                pos_encoding_type=adjacency_transformer_cfg["pos_encoding_type"],
+                lpe_dim=adjacency_transformer_cfg["lpe_dim"],
+                cnn_input_add_flattened_node_features=adjacency_transformer_cfg[
+                    "cnn_input_add_flattened_node_features"
+                ],
+                add_output_skip=adjacency_transformer_cfg["add_output_skip"],
+            )
         if include_cog_mlp:
             self.cog_branch = MLPCogBranch(
                 cog_in_dim=cog_mlp_cfg["cog_in_dim"],
@@ -224,7 +239,10 @@ class FusionModel(nn.Module):
         if include_mlp:
             concat_dim += 128
 
-        if include_transformer:
+        if include_cortex_transformer:
+            concat_dim += 128
+
+        if include_adjacency_transformer:
             concat_dim += 128
 
         if include_cog_mlp:
@@ -316,35 +334,46 @@ class FusionModel(nn.Module):
             x_flat = x_dense.view(x_dense.size(0), -1)
             zs.append(self.mlp(x_flat))
 
-        if self.include_transformer:
+        if self.include_cortex_transformer:
             from torch_geometric.utils import to_dense_batch
 
-            if not self.separate_adj_features_instead_of_concat:
-                x_dense, _ = to_dense_batch(
-                    x,
-                    batch,
-                    max_num_nodes=self.num_nodes,
+            x_dense, _ = to_dense_batch(
+                x,
+                batch,
+                max_num_nodes=self.num_nodes,
+            )
+
+            zs.append(
+                self.cortex_transformer(
+                    x_dense,
+                    lpe=lpe,
+                )
+            )
+
+        if self.include_adjacency_transformer:
+            from torch_geometric.utils import to_dense_batch
+
+            x_adj_row = getattr(data, "x_adj_row", None)
+
+            if x_adj_row is None:
+                raise ValueError(
+                    "include_adjacency_transformer=True, but data.x_adj_row is missing. "
+                    "Make sure preprocessing creates x_adj_row from weighted_adj_matrix."
                 )
 
-                zs.append(self.transformer(x_dense, lpe=lpe))
+            x_adj_row_dense, _ = to_dense_batch(
+                x_adj_row,
+                batch,
+                max_num_nodes=self.num_nodes,
+            )
 
-            else:
-                x_adj_row = getattr(data, "x_adj_row", None)
-
-                if x_adj_row is None:
-                    raise ValueError(
-                        "separate_adj_features_instead_of_concat=True, "
-                        "but data.x_adj_row is missing."
-                    )
-
-                x_adj_row_dense, _ = to_dense_batch(
-                    x_adj_row,
-                    batch,
-                    max_num_nodes=self.num_nodes,
+            zs.append(
+                self.adjacency_transformer(
+                    x_adj_row_dense,
+                    lpe=lpe,
                 )
-
-                zs.append(self.transformer(x_adj_row_dense, lpe=lpe))
-
+            )
+    
         if self.include_cog_mlp:
             x_cog = getattr(data, "x_cog", None)
 

@@ -77,7 +77,7 @@ def preprocess_global_data_list(
 
     add_adj = bool(getattr(args, "add_adj_row_as_node_feature", False))
     separate_adj_features = bool(getattr(args, "separate_adj_features_instead_of_concat", False))
-    if args.include_adjacency_gnn:
+    if args.include_adjacency_gnn or args.include_adjacency_transformer:
         print("Creating adjacency row node features ...")
 
         for d in data_list:
