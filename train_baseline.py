@@ -96,7 +96,7 @@ if __name__ == "__main__":
     args.add_argument("--add_adj_row_as_node_feature", action="store_true")
     args.add_argument("--separate_adj_features_instead_of_concat", action="store_true")
     args.add_argument("--add_weighted_degree_as_node_feature", action="store_true")
-
+    args.add_argument("--lt_conversion_window", type=int, default=24, help="Time window in months for defining long-term conversion (only relevant if task is 'long_term_conversion')")
     parsed_args = args.parse_args()
 
     # Output directory if timestamp is needed
@@ -124,7 +124,8 @@ if __name__ == "__main__":
 
     print("ADjacency features will be included:", include_adjacency )
     if parsed_args.run_dir is not None:
-        RESULTS_DIR = parsed_args.run_dir
+        RESULTS_DIR = parsed_args.run_dir + f"/seed_{parsed_args.random_seed}_{timestamp}"
+        os.makedirs(RESULTS_DIR, exist_ok=True)
     else:
         RESULTS_DIR = f"./results_baseline_models/training_fs_{include_x}_cog_{include_cog}_mri_{include_mri}_ucsffsx_{include_ucsffsx}_graph_measures_{include_graph_measures}_{timestamp}_cw"
         os.makedirs(RESULTS_DIR, exist_ok=True)

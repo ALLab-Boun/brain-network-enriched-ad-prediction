@@ -6,11 +6,10 @@
     "dataset": "adni",
     "epochs": 75,
     "lr": 5e-05,
-    "seed": 7,
+    "seed": 42,
     "batch_size": 64,
-    "dropout": 0.0,
-    "include_cnn": false,
-    "include_transformer": false,
+    "dropout": 0.4,
+    "include_adjacency_cnn": true,
     "fusion": "concat",
     "task": "diagnosis",
     "include_cortex_mlp": true,
@@ -22,13 +21,36 @@
     "cortex_mlp_num_layers": 1,
     "cortex_mlp_hidden_dims": null,
     "cortex_mlp_width_mode": "constant",
-    "include_cog_mlp": true,
-    "cog_hidden_dim": 128,
-    "cog_mlp_dropout": 0.0,
-    "cog_mlp_width_mode": "shrink",
-    "cog_mlp_num_layers": 3,
-    "cog_mlp_use_residual_to_last": false,
-    "add_laplacian_pe": false,
+    "adjacency_cnn_dropout": 0.5,
+    "adjacency_cnn_conv_channels": [
+        32,
+        128,
+        256
+    ],
+    "adjacency_cnn_kernel_sizes": [
+        3,
+        3,
+        3
+    ],
+    "adjacency_cnn_strides": [
+        2,
+        2,
+        1
+    ],
+    "adjacency_cnn_pool_types": [
+        "max",
+        "max",
+        "avg"
+    ],
+    "adjacency_cnn_pool_kernel_sizes": [
+        4,
+        4,
+        3
+    ],
+    "adjacency_cnn_negative_slope": 0.01,
+    "adjacency_cnn_norm_type": "group",
+    "adjacency_cnn_group_norm_groups": 8,
+    "adjacency_cnn_readout": "flatten",
     "pos_encoding_type": "sinusoidal",
     "lpe_dim": 8,
     "use_class_weights": false,
@@ -39,7 +61,7 @@
     "cog_feature_set": "all",
     "early_stopping": true,
     "es_monitor": "es_f1_weighted",
-    "es_patience": 10,
+    "es_patience": 20,
     "es_min_delta": 0.0025,
     "es_mode": "max"
 }
