@@ -25,6 +25,27 @@ class FusionModel(nn.Module):
       - adj_cnn_kwargs
       - transformer_kwargs
     """
+    def get_flat_x(self, data):
+        from torch_geometric.utils import to_dense_batch
+
+        x = data.x
+
+        batch = getattr(
+            data,
+            "batch",
+            torch.zeros(x.size(0), dtype=torch.long, device=x.device),
+        )
+
+        x_dense, _ = to_dense_batch(
+            x,
+            batch,
+            max_num_nodes=self.num_nodes,
+        )
+
+        x_flat = x_dense.view(x_dense.size(0), -1)
+
+        return x_flat
+
     def _make_gnn_branch(self, node_in_dim, gnn_cfg):
         if gnn_cfg["readout"] == "cnn":
             return GNNBranch_with_1dcnn_flattened(
@@ -79,7 +100,8 @@ class FusionModel(nn.Module):
         include_cortex_transformer: bool = False,
         include_adjacency_transformer: bool = False,
         include_cog_mlp: bool = False,
-
+        include_linear_x_logits: bool = False,
+        
         separate_adj_features_instead_of_concat: bool = False,
 
         cortex_gnn_kwargs: dict | None = None,
@@ -101,7 +123,7 @@ class FusionModel(nn.Module):
         self.include_cortex_transformer = include_cortex_transformer
         self.include_adjacency_transformer = include_adjacency_transformer        
         self.include_cog_mlp = include_cog_mlp
-
+        self.include_linear_x_logits = include_linear_x_logits
         self.separate_adj_features_instead_of_concat = separate_adj_features_instead_of_concat
 
         self.dropout = dropout
@@ -221,6 +243,11 @@ class FusionModel(nn.Module):
                 use_residual_to_last=cog_mlp_cfg["use_residual_to_last"],
             )
 
+        if include_linear_x_logits:
+            self.linear_x_logits = nn.Linear(
+                num_nodes * node_in_dim,
+                num_classes,
+            )
         # ------------------------------------------------------------------
         # Final classifier
         # ------------------------------------------------------------------
@@ -248,19 +275,27 @@ class FusionModel(nn.Module):
         if include_cog_mlp:
             concat_dim += 128
 
-        if concat_dim == 0:
+        if concat_dim == 0 and not include_linear_x_logits:
             raise ValueError(
                 "At least one branch must be enabled. "
                 "All include_* flags are False."
             )
+        # if concat_dim == 0:
+        #     raise ValueError(
+        #         "At least one branch must be enabled. "
+        #         "All include_* flags are False."
+        #     )
 
         self.concat_dim = concat_dim
 
-        self.classifier = nn.Sequential(
-            nn.LeakyReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(concat_dim, num_classes),
-        )
+        if concat_dim > 0:
+            self.classifier = nn.Sequential(
+                nn.LeakyReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(concat_dim, num_classes),
+            )
+        else:
+            self.classifier = None
 
     def encode(self, data):
         edge_index = data.edge_index
@@ -393,6 +428,19 @@ class FusionModel(nn.Module):
         return z_concat
 
     def forward(self, data):
-        z_concat = self.encode(data)
-        logits = self.classifier(z_concat)
+        logits = None
+
+        if self.classifier is not None:
+            z_concat = self.encode(data)
+            logits = self.classifier(z_concat)
+
+        if self.include_linear_x_logits:
+            x_flat = self.get_flat_x(data)
+            linear_logits = self.linear_x_logits(x_flat)
+
+            if logits is None:
+                logits = linear_logits
+            else:
+                logits = logits + linear_logits
+
         return logits

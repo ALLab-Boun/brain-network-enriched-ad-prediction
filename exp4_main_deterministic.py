@@ -157,6 +157,8 @@ def main(args, seed):
     # Sanity check
     num_nodes = data_list[0].x.shape[0]
     print(f"Each graph has {num_nodes} nodes and {data_list[0].x.shape[1]} node features.")
+    #print the values of the first node features for the first graph to check they look reasonable
+    print("First node features of the first graph:", data_list[0].x[0])
 
 
     # Early stopping data filenames
@@ -174,11 +176,11 @@ def main(args, seed):
     conv_visit_map = {}
     if args.dataset in ["adni", "oasis"]:
         if args.dataset == "adni":
-            conv_df = pd.read_excel("adni_labels_internal_dataset_plus_last_visit.xlsx")
+            conv_df = pd.read_excel("./metadata_tables/adni_labels_internal_dataset_plus_last_visit.xlsx")
             ptid_col = "PTID"
             viscode_col = "VISCODE"
         else:
-            conv_df = pd.read_excel("oasis_dataset_labels.xlsx")
+            conv_df = pd.read_excel("./metadata_tables/oasis_dataset_labels.xlsx")
             ptid_col = "OASISID"
             viscode_col = "scan_day"
         
@@ -189,6 +191,9 @@ def main(args, seed):
             conv_df["IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"]  
         elif args.task == "next_diagnosis":
             conv_df["IS_CONV_VISIT"] = conv_df["NEXT_IS_CONV_VISIT"]
+        elif args.task == "long_term_conversion":
+            # this task does not use visit-wise conversion labels, but we want to keep the column for consistency 
+            conv_df["IS_CONV_VISIT"] = -1
         # fill nans with -1 to indicate missing conversion label for that visit
         conv_df["IS_CONV_VISIT"] = conv_df["IS_CONV_VISIT"].fillna(-1).astype(int)
         
@@ -220,6 +225,7 @@ def main(args, seed):
             # Store as tensor so PyG Batch can collate it cleanly
             data.is_conv_visit = torch.tensor(flag, dtype=torch.long)
 
+        # next_diagnosis and long_term_conversion tasks require changing the labels in data.y
         if args.task == "next_diagnosis":
             # change data.y to be the NEXT_LABEL from conv_df
             for data in data_list:
@@ -238,7 +244,36 @@ def main(args, seed):
             # drop the data objects where we don't have a next diagnosis label 
             # data.y is -99 in this case
             data_list = [data for data in data_list if data.y != -99]
-    
+        elif args.task == "long_term_conversion":
+            if args.dataset == "adni":
+                long_term_conv_table = pd.read_excel("./metadata_tables/adni_progression_table.xlsx")
+                long_term_label_map = {
+                    (str(row['ptid']).strip(), str(row['viscode']).strip()): row['Progression 24m']
+                    for _, row in long_term_conv_table.iterrows()
+                }
+            elif args.dataset == "oasis":
+                long_term_label_map = {}
+                pass # TODO
+            
+            # change data.y to be the "Progression 24m" from long_term_conv_table
+            for data in data_list:
+                if args.dataset == "adni":
+                    ptid = str(data.ptid).strip()
+                    viscode = str(data.viscode).strip()
+                else:
+                    ptid = str(data.oasis_id).strip()
+                    viscode = str(data.scan_day).strip()
+
+                prog_label = long_term_label_map.get((ptid, viscode), -99)
+                if not pd.isna(prog_label) and prog_label != -99:
+                    data.y = torch.tensor(int(prog_label), dtype=torch.long)
+                else:
+                    data.y = torch.tensor(-99, dtype=torch.long)
+            
+            # We limit to mci visits for this task: smci/pmci classification
+            # AD (y = 2) and CN (y = -1) visits are not relevant for this task, and we also drop any visits where the long-term progression label is missing (y = -99)
+            data_list = [data for data in data_list if data.y != -99 and data.y != 2 and data.y != -1]  # keep if y=1 (pmci), drop if y=-99 (missing) or y=0 (cn)
+
     # PREPROCCESSING STEPS:
     data_list, cog_in_dim, vol_sum_index = preprocessing.preprocess_global_data_list(
         data_list=data_list,
@@ -364,7 +399,7 @@ def main(args, seed):
                 include_cog_mlp=args.include_cog_mlp,
                 include_cortex_transformer=args.include_cortex_transformer,
                 include_adjacency_transformer=args.include_adjacency_transformer,
-
+                include_linear_x_logits=args.include_linear_x_logits,
                 separate_adj_features_instead_of_concat=args.separate_adj_features_instead_of_concat,
 
                 **branch_kwargs,
@@ -846,6 +881,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", type=float, default = 0.5) # classifier head dropout
     parser.add_argument("--fusion", type=str, choices=["attention", "concat"], default="concat")
     parser.add_argument("--task", type=str, choices=["diagnosis", "next_diagnosis", "long_term_conversion"], default="diagnosis")
+    parser.add_argument("--lt_conversion_window", type=int, default=24, help="Time window in months for defining long-term conversion (only relevant if task is 'long_term_conversion')")
 
     # Branch inclusion args
     parser.add_argument("--include_cortex_mlp", action="store_true")
@@ -855,6 +891,7 @@ if __name__ == "__main__":
     parser.add_argument("--include_adjacency_gnn", action="store_true")
     parser.add_argument("--include_adjacency_transformer", action="store_true")
     parser.add_argument("--include_cog_mlp", action="store_true")
+    parser.add_argument("--include_linear_x_logits", action="store_true")
 
     parser.add_argument("--edge_threshold", type=float, default=1.0)
     parser.add_argument("--add_adj_row_as_node_feature", action="store_true")

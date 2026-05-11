@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, SAGEConv, GATv2Conv, GINConv, GraphNorm
 
 
-class GNNBranch_wo_pooling_with_1dcnn_flattened(nn.Module):
+class GNNBranch_with_1dcnn_flattened(nn.Module):
     """
     Flexible GNN branch with:
       - optional 1-layer pre-MLP before GNN

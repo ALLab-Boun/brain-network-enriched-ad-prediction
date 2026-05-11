@@ -33,7 +33,7 @@ class LearnablePositionalEncoding(nn.Module):
 from torch_geometric.transforms import AddLaplacianEigenvectorPE
 
 
-class TransformerCorticalBranch_with_1dcnn_flattened(nn.Module):
+class TransformerBranch_with_1dcnn_flattened(nn.Module):
     def __init__(self, num_nodes: int, node_in_dim: int, hidden_dim: int = 512,
                  out_dim: int = 128, num_heads: int = 4, num_layers: int = 2,
                  dropout: float = 0.5, negative_slope: float = 0.01,

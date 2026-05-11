@@ -2,6 +2,7 @@ data/*
 drive/*
 utils/__pycache__/*
 pretrained_model_weights/*
+results_baseline_models/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

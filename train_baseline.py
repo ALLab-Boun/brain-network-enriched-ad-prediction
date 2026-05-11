@@ -14,9 +14,13 @@ from sklearn.neighbors import KNeighborsClassifier
 from xgboost import XGBClassifier
 
 from sklearn.metrics import (
-    accuracy_score, f1_score, precision_recall_fscore_support,
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    precision_recall_fscore_support,
+    roc_auc_score,
+    average_precision_score,
 )
-
 
 from datetime import datetime
 
@@ -30,7 +34,7 @@ from sklearn.base import clone
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--random_seed", default=42,type=int, help="Random seed for reproducibility")
-    args.add_argument("--task", default="classification", type=str, choices=["classification", "conversion"], help="Task type")
+    args.add_argument("--task", default="classification", type=str, choices=["classification",  "next_diagnosis", "long_term_conversion"])
     args.add_argument("--is_tuning", action="store_true", help="Whether this is a hyperparameter tuning run")
     args.add_argument("--class_weights", action="store_true", help="Whether to use class weights in classifiers")
     args.add_argument("--dataset", default="adni", type=str, choices=["adni", "oasis"], help="Dataset name")
@@ -99,7 +103,7 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-    FEATURE_SLICES = preprocessing.get_feature_slices(args.excluded_node_features)
+    FEATURE_SLICES = preprocessing.get_feature_slices(parsed_args.excluded_node_features)
     DATASET_PATH = parsed_args.dataset_path
     CROSS_VAL_PKL_PATH = parsed_args.cross_val_pkl_path
     APPLY_PCA = parsed_args.apply_pca
@@ -166,16 +170,125 @@ if __name__ == "__main__":
 
     print(f"Loaded {len(data_list)} graphs")
 
-    # if the task is conversion, switch data.y to data.smci
-    if parsed_args.task == "conversion":
-        print("Using conversion task: switching labels to data.pmci")
-        for data in data_list:
-            if not hasattr(data, "pmci"):
-                raise AttributeError("Graph is missing attribute `pmci` needed for conversion task.")
+    conv_visit_map = {}
 
-            # ensure torch.long tensor
-            y_val = int(data.pmci)  
-            data.y = torch.tensor([y_val], dtype=torch.long)
+    if parsed_args.dataset == "adni":
+        conv_df = pd.read_excel("metadata_tables/adni_labels_internal_dataset_plus_last_visit.xlsx")
+
+        conv_df["PTID"] = conv_df["PTID"].astype(str).str.strip()
+        conv_df["VISCODE"] = conv_df["VISCODE"].astype(str).str.strip()
+
+        if parsed_args.task == "next_diagnosis":
+            conv_df["IS_CONV_VISIT"] = conv_df["NEXT_IS_CONV_VISIT"]
+        elif parsed_args.task == "classification":
+            conv_df["IS_CONV_VISIT"] = conv_df["CURRENT_IS_CONV_VISIT"]
+        elif parsed_args.task == "long_term_conversion":
+            # This task uses subject/visit-level long-term progression labels,
+            # not visit-wise conversion labels.
+            conv_df["IS_CONV_VISIT"] = -1
+        conv_df["IS_CONV_VISIT"] = conv_df["IS_CONV_VISIT"].fillna(-1).astype(int)
+
+        conv_visit_map = {
+            (str(row.PTID).strip(), str(row.VISCODE).strip()): int(row.IS_CONV_VISIT)
+            for row in conv_df.itertuples(index=False)
+        }
+        next_label_map = {
+            (str(row.PTID).strip(), str(row.VISCODE).strip()):
+                int(row.NEXT_LABEL) if not pd.isna(row.NEXT_LABEL) else -99
+            for row in conv_df.itertuples(index=False)
+        }
+
+        print(
+            "Loaded IS_CONV_VISIT labels:",
+            sum(v == 1 for v in conv_visit_map.values()),
+            "conversion visits out of",
+            len(conv_visit_map),
+            "rows"
+        )
+
+        for data in data_list:
+            ptid = str(data.ptid).strip()
+            viscode = str(data.viscode).strip()
+            flag = conv_visit_map.get((ptid, viscode), -1)
+            data.is_conv_visit = torch.tensor(flag, dtype=torch.long)
+
+    elif parsed_args.dataset == "oasis":
+        # Optional: if you do not have conversion-visit labels for OASIS,
+        # keep the field but mark it unavailable.
+        for data in data_list:
+            data.is_conv_visit = torch.tensor(-1, dtype=torch.long)
+    
+    if parsed_args.task == "next_diagnosis":
+        print("Using next_diagnosis task: switching labels to NEXT_LABEL")
+
+        for data in data_list:
+            ptid = str(data.ptid).strip()
+            viscode = str(data.viscode).strip()
+
+            next_label = next_label_map.get((ptid, viscode), -99)
+
+            # ADNI NEXT_LABEL is likely 1/2 for MCI/AD, convert to 0/1
+            next_label = next_label - 1 if next_label != -99 else -99
+
+            data.y = torch.tensor([next_label], dtype=torch.long)
+
+        before_n = len(data_list)
+        data_list = [
+            data for data in data_list
+            if int(data.y.item()) != -99
+        ]
+        after_n = len(data_list)
+
+        print(f"Dropped {before_n - after_n} samples without NEXT_LABEL. Remaining: {after_n}")
+    elif parsed_args.task == "long_term_conversion":
+        print("Using long_term_conversion task: switching labels to Progression 24m")
+
+        if parsed_args.dataset == "adni":
+            long_term_conv_table = pd.read_excel(
+                "./metadata_tables/adni_progression_table.xlsx"
+            )
+
+            long_term_label_map = {
+                (str(row["ptid"]).strip(), str(row["viscode"]).strip()): row["Progression 24m"]
+                for _, row in long_term_conv_table.iterrows()
+            }
+
+        elif parsed_args.dataset == "oasis":
+            raise NotImplementedError(
+                "long_term_conversion is not implemented for OASIS yet."
+            )
+
+        for data in data_list:
+            ptid = str(data.ptid).strip()
+            viscode = str(data.viscode).strip()
+
+            prog_label = long_term_label_map.get((ptid, viscode), -99)
+
+            if not pd.isna(prog_label) and prog_label != -99:
+                data.y = torch.tensor([int(prog_label)], dtype=torch.long)
+            else:
+                data.y = torch.tensor([-99], dtype=torch.long)
+
+        before_n = len(data_list)
+
+        data_list = [
+            data for data in data_list
+            if int(data.y.item()) not in [-99, -1, 2]
+        ]
+
+        after_n = len(data_list)
+
+        print(
+            f"Dropped {before_n - after_n} samples without valid long-term conversion label. "
+            f"Remaining: {after_n}"
+        )
+
+    labels = [int(data.y.item()) for data in data_list]
+    print("Task:", parsed_args.task)
+    print("Unique labels after task remapping:", sorted(set(labels)))
+    print("Label counts:", pd.Series(labels).value_counts().sort_index().to_dict())
+
+    # assert set(labels).issubset({0, 1}), f"Unexpected labels found: {set(labels)}"
 
     # Map filename to graph
     if parsed_args.dataset == "adni":
@@ -318,7 +431,10 @@ if __name__ == "__main__":
             clf = clone(base_clf)
             if "val_files" in split:
                 # train_filenames = split["train_files"] + split["val_files"] # no validation, add it to train
-                train_filenames = split["train_files"]
+                if parsed_args.dataset == "oasis":
+                    train_filenames = split["train_files"]
+                elif parsed_args.dataset == "adni":
+                    train_filenames = split["train_files"] + split["val_files"] 
             else:
                 train_filenames = split["train_files"]
             # train_files = split['train_files'] #+ split['val_files'] # Split with conversion subjects
@@ -403,29 +519,60 @@ if __name__ == "__main__":
             clf.fit(X_train, y_train)
             y_pred = clf.predict(X_test)
 
-            # Try to get probabilities (if classifier supports it)
+            # Get probability for class 1, if available
             if hasattr(clf, "predict_proba"):
                 y_prob = clf.predict_proba(X_test)
+                y_prob_class_1 = y_prob[:, 1]
             else:
                 y_prob = None
+                y_prob_class_1 = None
 
             acc = accuracy_score(y_test, y_pred)
-            f1_macro = f1_score(y_test, y_pred, average='macro')
-            f1_weighted = f1_score(y_test, y_pred, average='weighted')
-            precision, recall, _, _ = precision_recall_fscore_support(y_test, y_pred, labels=[0, 1], zero_division=0)
+            balanced_acc = balanced_accuracy_score(y_test, y_pred)
 
+            f1_macro = f1_score(y_test, y_pred, average="macro")
+            f1_weighted = f1_score(y_test, y_pred, average="weighted")
 
-            # Extract conversion visits
-            if parsed_args.task != "conversion" and parsed_args.dataset == "adni":
-                conversion_data = [data for data in test_data if data.status == 'MCI to Dementia']
-                # print(f"Fold {fold + 1} - Conversion data in test set: {len(conversion_data)}")
-                conversion_data_x, conversion_data_y, feature_names = preprocessing.get_flattened_features(conversion_data, include_x=include_x,
-                                                        include_cog= include_cog, include_mri=include_mri, include_ucsffsx=include_ucsffsx, include_graph_measures=include_graph_measures,
-                                                        include_adjacency=include_adjacency, expected_nodes=EXPECTED_NODES)
-                conversion_pred = clf.predict(conversion_data_x)
+            precision, recall, _, _ = precision_recall_fscore_support(
+                y_test,
+                y_pred,
+                labels=[0, 1],
+                zero_division=0
+            )
 
-                # fold-wise conversion recall
-                fold_conversion_recall = accuracy_score( [1]*len(conversion_pred), conversion_pred)
+            try:
+                final_auc = roc_auc_score(y_test, y_prob_class_1) if y_prob_class_1 is not None else float("nan")
+            except ValueError:
+                final_auc = float("nan")
+
+            try:
+                final_auprc = average_precision_score(y_test, y_prob_class_1) if y_prob_class_1 is not None else float("nan")
+            except ValueError:
+                final_auprc = float("nan")
+
+            # among true conversion visits, how many were predicted as positive class 1?
+            conv_true_count = 0
+            conv_pred_positive_count = 0
+
+            for i, data_obj in enumerate(test_data):
+                if hasattr(data_obj, "is_conv_visit"):
+                    conv_flag = data_obj.is_conv_visit
+                    if torch.is_tensor(conv_flag):
+                        conv_flag = int(conv_flag.item())
+                    else:
+                        conv_flag = int(conv_flag)
+
+                    if conv_flag == 1:
+                        conv_true_count += 1
+                        if int(y_pred[i]) == 1:
+                            conv_pred_positive_count += 1
+
+            final_conv_recall = (
+                float(conv_pred_positive_count) / conv_true_count
+                if conv_true_count > 0
+                else float("nan")
+            )
+
             
             if model_name == "Logistic_Regression":
                 # feature importance for Logistic Regression
@@ -437,26 +584,21 @@ if __name__ == "__main__":
                 importance_df['abs_importance'] = importance_df['importance'].abs()
                 importance_df = importance_df.sort_values(by='abs_importance', ascending=False)
                 importance_df.to_csv(os.path.join(RESULTS_DIR, f"{model_name}_feature_importance_fold_{fold + 1}.csv"), index=False)
-
-            if parsed_args.task == "conversion":
-                fold_conversion_recall = 0.0  # No conversion recall in conversion task
-
-            if parsed_args.dataset == "oasis":
-                print(f"Fold {fold + 1} - Note: Conversion recall not computed for OASIS dataset.")
-                fold_conversion_recall = 0.0
-            
+         
             fold_metrics.append({
                 "FOLD": fold + 1,
                 "ACC": acc,
+                "BALANCED_ACC": balanced_acc,
                 "F1_macro": f1_macro,
                 "F1_weighted": f1_weighted,
                 "PRECISION_CLASS_0": precision[0],
                 "RECALL_CLASS_0": recall[0],
                 "PRECISION_CLASS_1": precision[1],
                 "RECALL_CLASS_1": recall[1],
-                "FOLD_CONVERSION_RECALL": fold_conversion_recall
+                "AUC": final_auc,
+                "AUPRC": final_auprc,
+                "CONVERSION_RECALL": final_conv_recall,
             })
-
 
             for i, data_obj in enumerate(test_data):
                 ptid = getattr(data_obj, "ptid", getattr(data_obj, "oasis_id", None))
@@ -473,16 +615,24 @@ if __name__ == "__main__":
 
                 status = getattr(data_obj, "status", None)
 
+                is_conv_visit = getattr(data_obj, "is_conv_visit", -1)
+                if torch.is_tensor(is_conv_visit):
+                    is_conv_visit = int(is_conv_visit.item())
+                else:
+                    is_conv_visit = int(is_conv_visit)
+
                 record = {
                     "fold": fold + 1,
                     "ptid": ptid,
                     "viscode": viscode,
+                    "task": parsed_args.task,
                     "label": label,
                     "status": status,
                     "prediction": prediction,
-                    "prob_class_0": prob_class0,
-                    "prob_class_1": prob_class1,
-                    "model": model_name
+                    "prob_mci": prob_class0,
+                    "prob_ad": prob_class1,
+                    "is_conv_visit": is_conv_visit,
+                    "model": model_name,
                 }
 
                 all_prediction_records.append(record)

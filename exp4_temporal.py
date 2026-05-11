@@ -916,7 +916,7 @@ def main(args, seed):
             generator=g,
             num_workers=0,
             collate_fn=temporal_collate_fn_pyg_many_to_many,
-            drop_last=True, # ???
+            drop_last=True, # ?
         )
 
         observation_train_loader = DataLoader(

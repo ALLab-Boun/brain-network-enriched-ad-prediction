@@ -256,6 +256,29 @@ def preprocess_global_data_list_for_baseline(
             d.x = torch.cat([d.x, deg], dim=1)
 
         print("New node feature dim:", data_list[0].x.shape)
+    
+    if args.include_adjacency:
+        print("Calculating adjacency features from weighted_adj_matrix...")
+        for data in data_list:
+            if not hasattr(data, "weighted_adj_matrix"):
+                raise AttributeError("Graph is missing `weighted_adj_matrix` needed for adjacency features.")
+
+            adj = data.weighted_adj_matrix
+            if isinstance(adj, np.ndarray):
+                adj = torch.tensor(adj, dtype=torch.float)
+            else:
+                adj = adj.float()
+
+            # Handle shape [1, N, N]
+            if adj.dim() == 3 and adj.size(0) == 1:
+                adj = adj.squeeze(0)
+
+            if adj.dim() != 2 or adj.size(0) != adj.size(1):
+                raise ValueError(f"weighted_adj_matrix must be square, got shape {tuple(adj.shape)}")
+
+            triu_idx = torch.triu_indices(adj.size(0), adj.size(1), offset=1)
+            data.x_adjacency = adj[triu_idx[0], triu_idx[1]]
+
 
     # --- Cognitive feature selection (global) ---
     if args.cog_feature_set == "no_adas":
@@ -1103,3 +1126,133 @@ def get_feature_slices(excluded_node_features):
         }
     else:        
         raise ValueError(f"Unknown option for --excluded_node_features: {excluded_node_features}")
+    
+
+import pickle
+import pandas as pd
+def get_flattened_features(graphs, expected_nodes, include_x = True, include_cog=True, include_mri=True, include_ucsffsx=True, include_gae_embeddings=False,
+                            include_graph_measures=False, include_adjacency=False, return_visit_details=False):
+    X, y = [], []
+
+    # if include_ucsffsx:
+    #     with open("./mind_adni1/sparse_pca_model.pkl", "rb") as f:
+    #         spca_loaded = pickle.load(f)
+        
+        
+    visit_details = []  # To store visit details if required
+
+    for data in graphs:
+        # Flatten x and x_cog separately
+        x_flat = data.x.view(-1).numpy()
+        if include_cog:
+            x_cog_flat = data.x_cog.view(-1).numpy()
+        if include_mri:
+            x_mri_flat = data.x_mri.view(-1).numpy() 
+        if include_ucsffsx:
+            x_ucsffsx_flat = data.x_ucsffsx.view(-1).numpy() 
+            # Ensure it's 2D: shape (1, n_features)
+            x_input = x_ucsffsx_flat.reshape(1, -1)
+            # Apply SPCA transformation
+            # x_ucsffsx_flat = spca_loaded.transform(x_input)
+        if include_gae_embeddings and hasattr(data, 'gae_embedding'):
+            gae_flat = data.gae_embedding.view(-1).numpy() 
+            # print("GAE embedding shape:", gae_flat.shape)
+        if include_graph_measures and hasattr(data, 'x_graph_measures'):
+            x_gm_flat = data.x_graph_measures.view(-1).numpy()
+        features = []
+
+        if include_x:
+            features.append(x_flat)
+        if include_cog:
+            features.append(x_cog_flat)
+        if include_mri:
+            features.append(x_mri_flat)
+        if include_ucsffsx:
+            features.append(x_ucsffsx_flat)
+        if include_gae_embeddings :
+            features.append(gae_flat)
+        if include_graph_measures:
+            features.append(x_gm_flat)
+        if include_adjacency:
+            features.append(data.x_adjacency.cpu().numpy())
+
+
+
+        if return_visit_details:
+            ptid = data.ptid
+            viscode = data.viscode
+            label = int(data.y.cpu().item())
+            status = data.status # MCI to AD etc.
+            visit_details.append({
+                "ptid": ptid,
+                "viscode": viscode,
+                "label": label,
+                "status": status
+            })
+
+        feature_names = []
+        if include_x:
+            num_x = data.x.view(-1).shape[0]
+            feature_names += [f"x_pc{i}" for i in range(num_x)]
+        if include_cog:
+            num_cog = data.x_cog.view(-1).shape[0]
+            feature_names += [f"cog_{i}" for i in range(num_cog)]
+        if include_mri:
+            num_mri = data.x_mri.view(-1).shape[0]
+            feature_names += [f"mri_{i}" for i in range(num_mri)]
+        if include_ucsffsx:
+            num_ucsffsx = data.x_ucsffsx.view(-1).shape[0]
+            feature_names += [f"ucsffsx_{i}" for i in range(num_ucsffsx)]
+        if include_gae_embeddings and gae_flat is not None:
+            num_gae = data.gae_embedding.view(-1).shape[0]
+            feature_names += [f"gae_emb_{i}" for i in range(num_gae)]
+        if include_graph_measures:
+            num_gm = data.x_graph_measures.view(-1).shape[0]
+            if num_gm == 4:
+                 feature_names += ["mean_strength", "mean_betweenness", "mean_eigenvector_centrality", "mean_clustering_coefficient"]
+            else:
+                feature_names += [f"{roi}_{measure}" for roi in range(68) for measure in ["strength", "betweenness", "eigenvector_centrality", "clustering_coefficient"]]
+
+        if include_adjacency:
+            num_adj = data.x_adjacency.shape[0]
+            feature_names += [f"adj_{i}" for i in range(num_adj)]
+        if len(features) == 0  :
+            raise ValueError("At least one feature set must be included.")
+
+        # Combine all selected features
+        combined = np.concatenate(features, axis=0)
+
+        
+        # combined = x_cog_flat
+        X.append(combined)
+        y.append(data.y.item())
+        
+    if return_visit_details:
+        return np.array(X), np.array(y), feature_names, visit_details
+    else:
+        return np.array(X), np.array(y), feature_names
+    
+
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import torch
+
+def preprocess_adjacency_features_train(data_list):
+    X = np.stack([data.x_adjacency.cpu().numpy() for data in data_list], axis=0)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    mean_vec = scaler.mean_
+
+    for data, row in zip(data_list, X_scaled):
+        data.x_adjacency = torch.tensor(row, dtype=torch.float)
+
+    return data_list, scaler, mean_vec
+
+def preprocess_adjacency_features_test(data_list, scaler, mean_vec=None):
+    X = np.stack([data.x_adjacency.cpu().numpy() for data in data_list], axis=0)
+    X_scaled = scaler.transform(X)
+
+    for data, row in zip(data_list, X_scaled):
+        data.x_adjacency = torch.tensor(row, dtype=torch.float)
+
+    return data_list
