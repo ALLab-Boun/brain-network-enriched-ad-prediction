@@ -5,86 +5,22 @@ import torch.nn.functional as F
 from model.GNN import GNNBranch_with_1dcnn_flattened, GNNBranch_with_pooling
 from model.CortexMLP import MLPCorticalBranch
 from model.AdjacencyCNN import CNNAdjacency1D_Pool
-from model.CortexTransformer import TransformerBranch_with_1dcnn_flattened
+from model.Transformer import TransformerBranch_with_1dcnn_flattened
 from model.CognitiveMLP import MLPCogBranch
 
 
 class FusionModel(nn.Module):
     """
     Fusion model with optional branches:
-      - GNN branch
-      - adjacency CNN branch
-      - cortical MLP branch
-      - cortical transformer branch
-      - cognitive MLP branch
-
-    Branch-specific hyperparameters are passed as dictionaries:
-      - gnn_kwargs
-      - cortex_mlp_kwargs
-      - cog_mlp_kwargs
-      - adj_cnn_kwargs
-      - transformer_kwargs
+      - Cortex MLP branch
+      - Cortex GNN branch
+      - Cortex Transformer branch 
+      - Adjacency CNN branch
+      - Adjacency GNN branch
+      - Adjacency Transformer branch
+      - Cognitive MLP branch
     """
-    def get_flat_x(self, data):
-        from torch_geometric.utils import to_dense_batch
-
-        x = data.x
-
-        batch = getattr(
-            data,
-            "batch",
-            torch.zeros(x.size(0), dtype=torch.long, device=x.device),
-        )
-
-        x_dense, _ = to_dense_batch(
-            x,
-            batch,
-            max_num_nodes=self.num_nodes,
-        )
-
-        x_flat = x_dense.view(x_dense.size(0), -1)
-
-        return x_flat
-
-    def _make_gnn_branch(self, node_in_dim, gnn_cfg):
-        if gnn_cfg["readout"] == "cnn":
-            return GNNBranch_with_1dcnn_flattened(
-                node_in_dim=node_in_dim,
-                hidden_dim=gnn_cfg["hidden_dim"],
-                out_dim=128,
-                dropout=gnn_cfg["dropout"],
-                num_gnn_layers=gnn_cfg["num_layers"],
-                norm_type=gnn_cfg["norm_type"],
-                gnn_layer=gnn_cfg["layer"],
-                use_pre_mlp=gnn_cfg["use_pre_mlp"],
-                cnn_input_add_flattened_node_features=gnn_cfg[
-                    "cnn_input_add_flattened_node_features"
-                ],
-                add_output_skip=gnn_cfg["add_output_skip"],
-                layer_connectivity=gnn_cfg["layer_connectivity"],
-            )
-
-        elif gnn_cfg["readout"] == "pool":
-            return GNNBranch_with_pooling(
-                node_in_dim=node_in_dim,
-                hidden_dim=gnn_cfg["hidden_dim"],
-                out_dim=128,
-                dropout=gnn_cfg["dropout"],
-                num_gnn_layers=gnn_cfg["num_layers"],
-                norm_type=gnn_cfg["norm_type"],
-                gnn_layer=gnn_cfg["layer"],
-                use_pre_mlp=gnn_cfg["use_pre_mlp"],
-                graph_pool=gnn_cfg["graph_pool"],
-                add_output_skip=gnn_cfg["add_output_skip"],
-                layer_connectivity=gnn_cfg["layer_connectivity"],
-            )
-
-        else:
-            raise ValueError(
-                f"Unknown gnn readout: {gnn_cfg['readout']}. "
-                "Expected one of ['cnn', 'pool']."
-            )
-
+   
     def __init__(
         self,
         num_nodes: int,
@@ -347,7 +283,12 @@ class FusionModel(nn.Module):
                 raise ValueError(
                     "include_adjacency_cnn=True, but data.weighted_adj_matrix is missing."
                 )
+            # B = data.num_graphs
+            # N = self.num_nodes
 
+            # # Case 1: PyG batched [B*N, N]
+            # if adj.dim() == 2 and adj.size(0) == B * N and adj.size(1) == N:
+            #     adj = adj.view(B, N, N)
             if adj.dim() == 2:
                 adj = adj.unsqueeze(0)
 
@@ -444,3 +385,63 @@ class FusionModel(nn.Module):
                 logits = logits + linear_logits
 
         return logits
+    
+    def get_flat_x(self, data):
+        from torch_geometric.utils import to_dense_batch
+
+        x = data.x
+
+        batch = getattr(
+            data,
+            "batch",
+            torch.zeros(x.size(0), dtype=torch.long, device=x.device),
+        )
+
+        x_dense, _ = to_dense_batch(
+            x,
+            batch,
+            max_num_nodes=self.num_nodes,
+        )
+
+        x_flat = x_dense.view(x_dense.size(0), -1)
+
+        return x_flat
+
+    def _make_gnn_branch(self, node_in_dim, gnn_cfg):
+        if gnn_cfg["readout"] == "cnn":
+            return GNNBranch_with_1dcnn_flattened(
+                node_in_dim=node_in_dim,
+                hidden_dim=gnn_cfg["hidden_dim"],
+                out_dim=128,
+                dropout=gnn_cfg["dropout"],
+                num_gnn_layers=gnn_cfg["num_layers"],
+                norm_type=gnn_cfg["norm_type"],
+                gnn_layer=gnn_cfg["layer"],
+                use_pre_mlp=gnn_cfg["use_pre_mlp"],
+                cnn_input_add_flattened_node_features=gnn_cfg[
+                    "cnn_input_add_flattened_node_features"
+                ],
+                add_output_skip=gnn_cfg["add_output_skip"],
+                layer_connectivity=gnn_cfg["layer_connectivity"],
+            )
+
+        elif gnn_cfg["readout"] == "pool":
+            return GNNBranch_with_pooling(
+                node_in_dim=node_in_dim,
+                hidden_dim=gnn_cfg["hidden_dim"],
+                out_dim=128,
+                dropout=gnn_cfg["dropout"],
+                num_gnn_layers=gnn_cfg["num_layers"],
+                norm_type=gnn_cfg["norm_type"],
+                gnn_layer=gnn_cfg["layer"],
+                use_pre_mlp=gnn_cfg["use_pre_mlp"],
+                graph_pool=gnn_cfg["graph_pool"],
+                add_output_skip=gnn_cfg["add_output_skip"],
+                layer_connectivity=gnn_cfg["layer_connectivity"],
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown gnn readout: {gnn_cfg['readout']}. "
+                "Expected one of ['cnn', 'pool']."
+            )

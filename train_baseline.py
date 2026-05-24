@@ -53,6 +53,9 @@ if __name__ == "__main__":
     # Paths
     args.add_argument("--dataset_path", type=str, default=r"C:\dev\GitHub\graph-based-dementia-prediction\data\adni\CT_Vol_graphs_complete_features_filtered_negative.pt", help="Path to dataset (directory of .pt files or single .pt file)")
     args.add_argument("--cross_val_pkl_path", type=str, default=r"C:\dev\GitHub\graph-based-dementia-prediction\data\adni\splits\reporting_cv_splits.pkl", help="Path to cross-validation splits pickle file")
+    # args.add_argument("--dataset_path", type=str, default=r"C:\dev\GitHub\graph-based-dementia-prediction\data\oasis3\CTVOL_all_graphs_relabeled_6m_filtered_negative.pt", help="Path to dataset (directory of .pt files or single .pt file)")
+    # args.add_argument("--cross_val_pkl_path", type=str, default=r"C:\dev\GitHub\graph-based-dementia-prediction\data\oasis3\splits\oasis_cv_1foldval.pkl", help="Path to cross-validation splits pickle file")
+    
     
     # Which models to train/evaluate
     args.add_argument("--models", nargs="+",
@@ -174,8 +177,8 @@ if __name__ == "__main__":
     conv_visit_map = {}
 
     if parsed_args.dataset == "adni":
-        conv_df = pd.read_excel("metadata_tables/adni_labels_internal_dataset_plus_last_visit.xlsx")
-
+        # conv_df = pd.read_excel("metadata_tables/adni_labels_internal_dataset_plus_last_visit.xlsx")
+        conv_df = pd.read_excel("metadata_tables/adni_labels_internal_dataset_plus_last_visit_filled.xlsx")
         conv_df["PTID"] = conv_df["PTID"].astype(str).str.strip()
         conv_df["VISCODE"] = conv_df["VISCODE"].astype(str).str.strip()
 
@@ -291,6 +294,13 @@ if __name__ == "__main__":
 
     # assert set(labels).issubset({0, 1}), f"Unexpected labels found: {set(labels)}"
 
+    # print some samples from the dataset to verify
+    for i in range(min(5, len(data_list))):
+        data = data_list[i]
+        print(f"Sample {i}: ptid={getattr(data, 'ptid', 'N/A')}, viscode={getattr(data, 'viscode', 'N/A')}, label={data.y.item()}, is_conv_visit={data.is_conv_visit.item()}")
+        # print data.x_cog
+        print(f"Sample {i}: x_cog shape={data.x_cog.shape}, values: { data.x_cog.tolist() if data.x_cog.numel() <= 10 else 'too many values to display'}")
+     
     # Map filename to graph
     if parsed_args.dataset == "adni":
         filename_to_data = {data.ptid + "_" + data.viscode + ".pt": data for data in data_list}
@@ -481,6 +491,8 @@ if __name__ == "__main__":
 
             if APPLY_PCA and include_x:
                 train_data, pca_cortex = preprocessing.fit_pca_on_train(train_data, n_components=NUM_COMPONENTS)
+                print(f"Explained Variance Ratios: {pca_cortex.explained_variance_ratio_}")
+                print(f"Cumulative Explained Variance: {pca_cortex.explained_variance_ratio_.sum():.2f}")
                 test_data = preprocessing.apply_pca_to_graphs(test_data, pca_cortex)
 
             X_train, y_train, feature_names = preprocessing.get_flattened_features(train_data, include_x=include_x,

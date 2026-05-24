@@ -6,15 +6,18 @@ import pandas as pd
 # CONFIG
 # -----------------------------
 root_dir = Path(
-    r"./drive/MyDrive/crosssectional_experiments_lt_conversion"
+    # r"./drive/MyDrive/crosssectional_experiments_lt_conversion"
+    r"C:\Users\efeka\Documents\thesis_results\thesis_results\2026_05_03\crosssectional_experiments_adni"
 )
+
 #     r"/content/drive/MyDrive/temporal_experiments")
-output_excel = root_dir / "combined_results_table.xlsx"
+output_excel = root_dir / "combined_results_table_smcipmci12m.xlsx"
 
 # Metrics to include.
 # Set to None to include all metrics found in the CSV files.
 metrics_to_include = [
     "ACC",
+    "Accuracy",
     "AUC",
     "AUPRC",
     "BALANCED_ACC",
@@ -27,7 +30,9 @@ metrics_to_include = [
     "RECALL_CLASS_1",
 ]
 
-summary_filename = "aggregated_summary.csv"
+# summary_filename = "aggregated_summary.csv"
+# summary_filename = "aggregated_summary_converters.csv"
+summary_filename = "aggregated_summary_smci_pmci_12m.csv"
 
 
 # -----------------------------
@@ -46,7 +51,7 @@ for subdir in sorted(root_dir.iterdir()):
         continue
 
     # The metric names are in the first column, usually saved as an unnamed index.
-    df = pd.read_csv(csv_path, index_col=0)
+    df = pd.read_csv(csv_path, index_col="Metric")
 
     row = {"Model": subdir.name}
 
@@ -62,9 +67,9 @@ for subdir in sorted(root_dir.iterdir()):
         std_val = df.loc[metric, "Mean_of_Stds"]
 
         if pd.isna(mean_val) or pd.isna(std_val):
-            row[f"{metric} mean (std)"] = pd.NA
+            row[f"{metric}\nmean (std)"] = pd.NA
         else:
-            row[f"{metric} mean (std)"] = f"{mean_val:.3f} ({std_val:.3f})"
+            row[f"{metric}\nmean (std)"] = f"{mean_val * 100:.2f} ({std_val * 100:.2f})"
 
     for metric in selected_metrics:
         if metric not in df.index:
@@ -76,7 +81,7 @@ for subdir in sorted(root_dir.iterdir()):
         if pd.isna(seed_std):
             row[f"{metric} seed std"] = pd.NA
         else:
-            row[f"{metric} seed std"] = f"{seed_std:.3f}"
+            row[f"{metric} seed std"] = f"{seed_std * 100:.2f}"
 
     rows.append(row)
 

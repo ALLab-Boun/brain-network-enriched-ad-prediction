@@ -6,15 +6,16 @@ import pandas as pd
 # CONFIG
 # -----------------------------
 root_dir = Path(
-    r"C:\dev\GitHub\graph-based-dementia-prediction\results_baseline_models\lt_conv"
+    r"C:\dev\GitHub\graph-based-dementia-prediction\results_baseline_models\cs_trad_next_visit_lastvisitadfilled_5xseed"
 )
 
-output_excel = root_dir / "combined_results_table.xlsx"
+output_excel = root_dir / "combined_results_table_nvis_lastvisitadfilled_converter.xlsx"
 
 # Metrics to include.
 # Set to None to include all metrics found in the CSV files.
 metrics_to_include = [
     "ACC",
+    "Accuracy",
     "AUC",
     "AUPRC",
     "BALANCED_ACC",
@@ -33,8 +34,9 @@ metrics_to_include = [
 # aggregated_summary_Random_Forest.csv
 # aggregated_summary_SVM_RBF.csv
 # aggregated_summary_XGBoost.csv
-summary_glob_pattern = "aggregated_summary_*.csv"
-
+summary_glob_pattern = "aggregated_summary_converters_*.csv"
+        # summary_glob_pattern = "aggregated_summary_*_smci_pmci_24m.csv"
+# summary_glob_pattern = "aggregated_summary_*.csv"
 
 # -----------------------------
 # HELPERS
@@ -89,7 +91,10 @@ for experiment_dir in sorted(root_dir.iterdir(), key=lambda p: get_numeric_prefi
         combined_model_name = f"{experiment_dir.name}_{traditional_model_name}"
 
         # Metric names are in the first column, usually saved as an unnamed index.
-        df = pd.read_csv(csv_path, index_col=0)
+        
+        
+        # df = pd.read_csv(csv_path, index_col=0)
+        df = pd.read_csv(csv_path, index_col="Metric")
 
         row = {
             "Experiment": experiment_dir.name,
@@ -112,7 +117,7 @@ for experiment_dir in sorted(root_dir.iterdir(), key=lambda p: get_numeric_prefi
             if pd.isna(mean_val) or pd.isna(std_val):
                 row[f"{metric} mean (std)"] = pd.NA
             else:
-                row[f"{metric} mean (std)"] = f"{mean_val:.3f} ({std_val:.3f})"
+                row[f"{metric}\nmean (std)"] = f"{mean_val * 100:.2f} ({std_val * 100:.2f})"
 
         # Optional seed-variability columns
         for metric in selected_metrics:
@@ -129,7 +134,7 @@ for experiment_dir in sorted(root_dir.iterdir(), key=lambda p: get_numeric_prefi
             if pd.isna(seed_std):
                 row[f"{metric} seed std"] = pd.NA
             else:
-                row[f"{metric} seed std"] = f"{seed_std:.3f}"
+                row[f"{metric} seed std"] = f"{seed_std * 100:.2f}"
 
         rows.append(row)
 

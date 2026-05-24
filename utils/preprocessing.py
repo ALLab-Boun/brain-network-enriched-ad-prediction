@@ -276,9 +276,9 @@ def preprocess_global_data_list_for_baseline(
             if adj.dim() != 2 or adj.size(0) != adj.size(1):
                 raise ValueError(f"weighted_adj_matrix must be square, got shape {tuple(adj.shape)}")
 
-            triu_idx = torch.triu_indices(adj.size(0), adj.size(1), offset=1)
-            data.x_adjacency = adj[triu_idx[0], triu_idx[1]]
-
+            # triu_idx = torch.triu_indices(adj.size(0), adj.size(1), offset=1)
+            # data.x_adjacency = adj[triu_idx[0], triu_idx[1]]
+            data.x_adjacency = adj.flatten()
 
     # --- Cognitive feature selection (global) ---
     if args.cog_feature_set == "no_adas":
@@ -862,95 +862,6 @@ def add_similarity_rows_to_x(data_list, discard_fs_features=False, make_symmetri
 
 
 
-# Utility to flatten node features
-import pickle
-import pandas as pd
-def get_flattened_features(graphs, expected_nodes, include_x = True, include_cog=True, include_mri=True, include_ucsffsx=True, include_gae_embeddings=False, return_visit_details=False):
-    X, y = [], []
-
-    # if include_ucsffsx:
-    #     with open("./mind_adni1/sparse_pca_model.pkl", "rb") as f:
-    #         spca_loaded = pickle.load(f)
-        
-        
-    visit_details = []  # To store visit details if required
-
-    for data in graphs:
-        # Flatten x and x_cog separately
-        x_flat = data.x.view(-1).numpy()
-        if include_cog:
-            x_cog_flat = data.x_cog.view(-1).numpy()
-        if include_mri:
-            x_mri_flat = data.x_mri.view(-1).numpy() 
-        if include_ucsffsx:
-            x_ucsffsx_flat = data.x_ucsffsx.view(-1).numpy() 
-            # Ensure it's 2D: shape (1, n_features)
-            x_input = x_ucsffsx_flat.reshape(1, -1)
-            # Apply SPCA transformation
-            # x_ucsffsx_flat = spca_loaded.transform(x_input)
-        if include_gae_embeddings and hasattr(data, 'gae_embedding'):
-            gae_flat = data.gae_embedding.view(-1).numpy() 
-            # print("GAE embedding shape:", gae_flat.shape)
-        features = []
-
-        if include_x:
-            features.append(x_flat)
-        if include_cog:
-            features.append(x_cog_flat)
-        if include_mri:
-            features.append(x_mri_flat)
-        if include_ucsffsx:
-            features.append(x_ucsffsx_flat)
-        if include_gae_embeddings :
-            features.append(gae_flat)
-
-
-
-        if return_visit_details:
-            ptid = data.ptid
-            viscode = data.viscode
-            label = int(data.y.cpu().item())
-            status = data.status # MCI to AD etc.
-            visit_details.append({
-                "ptid": ptid,
-                "viscode": viscode,
-                "label": label,
-                "status": status
-            })
-
-        feature_names = []
-        if include_x:
-            num_x = data.x.view(-1).shape[0]
-            feature_names += [f"x_pc{i}" for i in range(num_x)]
-        if include_cog:
-            num_cog = data.x_cog.view(-1).shape[0]
-            feature_names += [f"cog_{i}" for i in range(num_cog)]
-        if include_mri:
-            num_mri = data.x_mri.view(-1).shape[0]
-            feature_names += [f"mri_{i}" for i in range(num_mri)]
-        if include_ucsffsx:
-            num_ucsffsx = data.x_ucsffsx.view(-1).shape[0]
-            feature_names += [f"ucsffsx_{i}" for i in range(num_ucsffsx)]
-        if include_gae_embeddings and gae_flat is not None:
-            num_gae = data.gae_embedding.view(-1).shape[0]
-            feature_names += [f"gae_emb_{i}" for i in range(num_gae)]
-
-        if len(features) == 0  :
-            raise ValueError("At least one feature set must be included.")
-
-        # Combine all selected features
-        combined = np.concatenate(features, axis=0)
-
-        
-        # combined = x_cog_flat
-        X.append(combined)
-        y.append(data.y.item())
-        
-    if return_visit_details:
-        return np.array(X), np.array(y), feature_names, visit_details
-    else:
-        return np.array(X), np.array(y), feature_names
-
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
@@ -1233,6 +1144,8 @@ def get_flattened_features(graphs, expected_nodes, include_x = True, include_cog
         return np.array(X), np.array(y), feature_names
     
 
+
+# # Feature wise adjacency scaling
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import torch
@@ -1254,5 +1167,136 @@ def preprocess_adjacency_features_test(data_list, scaler, mean_vec=None):
 
     for data, row in zip(data_list, X_scaled):
         data.x_adjacency = torch.tensor(row, dtype=torch.float)
+
+    return data_list
+
+# import numpy as np
+# import torch
+
+
+# class GlobalStandardScaler:
+#     def __init__(self, eps=1e-8):
+#         self.mean_ = None
+#         self.std_ = None
+#         self.eps = eps
+
+#     def fit(self, X):
+#         """
+#         X shape: [num_samples, num_features]
+#         Computes one global mean and one global std over all values.
+#         """
+#         self.mean_ = float(X.mean())
+#         self.std_ = float(X.std())
+
+#         if self.std_ < self.eps:
+#             self.std_ = 1.0
+
+#         return self
+
+#     def transform(self, X):
+#         return (X - self.mean_) / (self.std_ + self.eps)
+
+#     def fit_transform(self, X):
+#         self.fit(X)
+#         return self.transform(X)
+
+
+# def preprocess_adjacency_features_train(data_list):
+#     X = np.stack(
+#         [data.x_adjacency.cpu().numpy() for data in data_list],
+#         axis=0
+#     )
+
+#     scaler = GlobalStandardScaler()
+#     X_scaled = scaler.fit_transform(X)
+
+#     for data, row in zip(data_list, X_scaled):
+#         data.x_adjacency = torch.tensor(row, dtype=torch.float)
+
+#     return data_list, scaler, scaler.mean_
+
+
+# def preprocess_adjacency_features_test(data_list, scaler, mean_vec=None):
+#     X = np.stack(
+#         [data.x_adjacency.cpu().numpy() for data in data_list],
+#         axis=0
+#     )
+
+#     X_scaled = scaler.transform(X)
+
+#     for data, row in zip(data_list, X_scaled):
+#         data.x_adjacency = torch.tensor(row, dtype=torch.float)
+
+#     return data_list
+
+
+
+def preprocess_adjacency_matrix_features_train(data_list):
+    """
+    Standardize dense adjacency matrices using TRAIN only.
+
+    Updates:
+      - data.weighted_adj_matrix
+      - data.x_adj_row, if present
+    """
+    X = []
+
+    for data in data_list:
+        A = data.weighted_adj_matrix
+
+        if A.dim() == 3 and A.size(0) == 1:
+            A = A.squeeze(0)
+
+        X.append(A.cpu().numpy().reshape(-1))
+
+    X = np.stack(X, axis=0)  # [num_subjects, N*N]
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    num_nodes = data_list[0].weighted_adj_matrix.squeeze().shape[0]
+
+    for data, row in zip(data_list, X_scaled):
+        A_scaled = torch.tensor(
+            row.reshape(num_nodes, num_nodes),
+            dtype=torch.float32
+        )
+
+        data.weighted_adj_matrix = A_scaled
+
+        if hasattr(data, "x_adj_row"):
+            data.x_adj_row = A_scaled
+
+    return data_list, scaler
+
+def preprocess_adjacency_matrix_features_test(data_list, scaler):
+    """
+    Apply TRAIN-fitted adjacency matrix scaler to TEST / ES data.
+    """
+    X = []
+
+    for data in data_list:
+        A = data.weighted_adj_matrix
+
+        if A.dim() == 3 and A.size(0) == 1:
+            A = A.squeeze(0)
+
+        X.append(A.cpu().numpy().reshape(-1))
+
+    X = np.stack(X, axis=0)
+    X_scaled = scaler.transform(X)
+
+    num_nodes = data_list[0].weighted_adj_matrix.squeeze().shape[0]
+
+    for data, row in zip(data_list, X_scaled):
+        A_scaled = torch.tensor(
+            row.reshape(num_nodes, num_nodes),
+            dtype=torch.float32
+        )
+
+        data.weighted_adj_matrix = A_scaled
+
+        if hasattr(data, "x_adj_row"):
+            data.x_adj_row = A_scaled
 
     return data_list

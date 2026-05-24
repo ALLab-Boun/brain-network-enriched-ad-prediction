@@ -426,6 +426,17 @@ def main(args, seed):
         if use_es:
             early_stopping_data = preprocessing.apply_mri_node_scalers(early_stopping_data, mri_node_scalers)
 
+        # Adjacency scaling (avoided since mind degrees are already 0-1)
+        # if args.include_adjacency_cnn or args.include_adjacency_gnn or args.include_adjacency_transformer:
+        #     train_data, adjacency_scaler = preprocessing.preprocess_adjacency_matrix_features_train(train_data)
+        #     test_data = preprocessing.preprocess_adjacency_matrix_features_test(test_data, adjacency_scaler)
+
+        #     if use_es:
+        #         early_stopping_data = preprocessing.preprocess_adjacency_matrix_features_test(
+        #             early_stopping_data,
+        #             adjacency_scaler
+        #         )
+
         print("Shape of node features:", train_data[0].x.shape)
 
         # seed for loaders
