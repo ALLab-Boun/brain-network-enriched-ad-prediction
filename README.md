@@ -8,8 +8,8 @@ An overview of the proposed deep learning framework is shown in the figure below
 
 ## Running the code
 
-Install the Python dependencies used by PyTorch, PyTorch Geometric, scikit-learn, pandas, NumPy, and matplotlib before running any script.
-The main training entry point is `main.py`, which accepts command-line arguments for the dataset path, cross-validation split file, task, model branches, and training hyperparameters.
+Install the Python dependencies specified in `requirements.txt`.
+The main training entry point for training the frameworkis `main.py`, which accepts command-line arguments for the dataset path, cross-validation split file, task, model branches, and training hyperparameters.
 For a direct run, call `python main.py --dataset_path <path-to-pt-file> --cross_val_pkl <path-to-splits-pkl> --dataset adni --task diagnosis` and add any branch or optimization flags you want to test.
 The script saves fold-level metrics, prediction tables, model weights, and training curves in a timestamped results directory.
 To run multiple seeds from a JSON configuration, use `runner_main.py` and pass `--json_config <config.json>`.
