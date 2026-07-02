@@ -68,11 +68,11 @@ def load_json_config(json_path):
 # ------------------------------------------------------------
 
 def parse_runner_args():
-    parser = argparse.ArgumentParser(description="Run exp4_main_deterministic.py using arguments loaded from a JSON config.")
+    parser = argparse.ArgumentParser(description="Run main.py using arguments loaded from a JSON config.")
 
     parser.add_argument("--json_config", type=str, required=True, help="Path to the JSON config file.")
     parser.add_argument("--python_exe", type=str, default=r"C:\Users\efeka\Documents\thesis_colab_match\Scripts\python.exe", help="Python executable used to launch the training script.")
-    parser.add_argument("--script_path", type=str, default="exp4_main_deterministic.py", help="Path to the training script.")
+    parser.add_argument("--script_path", type=str, default="main.py", help="Path to the training script.")
     parser.add_argument("--seeds", type=int, nargs="+", default=[7], help="One or more seeds to run.")
     parser.add_argument("--stagger_seconds", type=float, default=5.0, help="Delay between launching each seed.")
 
