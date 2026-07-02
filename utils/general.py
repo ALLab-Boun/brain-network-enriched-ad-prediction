@@ -11,31 +11,6 @@ from torch_geometric.utils import add_self_loops, remove_self_loops
 from copy import deepcopy
 import pickle
 import math
-# def remove_low_weight_edges_pyg(data, threshold=0.05):
-#     """
-#     Remove edges from a PyG Data object whose edge_attr (assumed weight) is below threshold.
-#     Assumes undirected graph: if (u,v) is removed, (v,u) is also removed.
-#     """
-#     data = deepcopy(data)  # Clone the original to avoid in-place changes
-
-#     edge_index = data.edge_index
-#     edge_attr = data.edge_attr
-
-#     if edge_attr is None:
-#         raise ValueError("Edge attributes (edge_attr) are required for thresholding based on weight.")
-
-#     # Identify edges to keep
-#     keep_mask = edge_attr.view(-1) >= threshold
-
-#     # Apply the mask
-#     new_edge_index = edge_index[:, keep_mask]
-#     new_edge_attr = edge_attr[keep_mask]
-
-#     data.edge_index = new_edge_index
-#     data.edge_attr = new_edge_attr
-
-#     return data
-
 
 def remove_low_weight_edges_pyg(data, threshold=0.8):
     """
@@ -349,35 +324,6 @@ def train_one_epoch(model, loader, optimizer, device, criterion=None):
         total_loss += loss.item() * data.num_graphs
     return total_loss / len(loader.dataset)
 
-
-# @torch.no_grad()
-# def evaluate(model, loader, device):
-#     model.eval()
-#     y_true, y_pred = [], []
-#     total_loss = 0.0
-
-#     for data in loader:
-#         data = data.to(device)
-#         logits = model(data)
-#         loss = F.cross_entropy(logits, data.y)
-#         total_loss += loss.item() * data.y.size(0)  # batch-size weighted loss
-
-#         preds = logits.argmax(dim=1)
-
-#         # Extend lists with the batch contents, not append
-#         y_true.extend(data.y.cpu().tolist())
-#         y_pred.extend(preds.cpu().tolist())
-
-#     # Convert to tensors
-#     y_true = torch.tensor(y_true)
-#     y_pred = torch.tensor(y_pred)
-
-#     acc = accuracy_score(y_true, y_pred)
-#     f1 = f1_score(y_true, y_pred, average="weighted")
-
-#     mean_loss = total_loss / len(loader.dataset)
-#     return mean_loss, acc, f1
-
 @torch.no_grad()
 def evaluate(model, loader, device, criterion=None):
     model.eval()
@@ -600,3 +546,98 @@ def sort_edges_for_lstm_aggr(data):
         data.edge_index = sort_edge_index(data.edge_index, sort_by_row=False)
 
     return data
+
+def build_model_kwargs_from_args(args, cog_in_dim):
+    cortex_gnn_kwargs = {
+        "dropout": args.cortex_gnn_dropout,
+        "hidden_dim": args.cortex_gnn_hidden_dim,
+        "use_pre_mlp": args.cortex_gnn_use_pre_mlp,
+        "cnn_input_add_flattened_node_features": args.cortex_gnn_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.cortex_gnn_add_output_skip,
+        "layer_connectivity": args.cortex_gnn_layer_connectivity,
+        "norm_type": args.cortex_gnn_norm_type,
+        "num_layers": args.cortex_gnn_num_layers,
+        "layer": args.cortex_gnn_layer,
+        "readout": args.cortex_gnn_readout,
+        "graph_pool": args.cortex_gnn_graph_pool,
+    }
+
+    adjacency_gnn_kwargs = {
+        "dropout": args.adjacency_gnn_dropout,
+        "hidden_dim": args.adjacency_gnn_hidden_dim,
+        "use_pre_mlp": args.adjacency_gnn_use_pre_mlp,
+        "cnn_input_add_flattened_node_features": args.adjacency_gnn_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.adjacency_gnn_add_output_skip,
+        "layer_connectivity": args.adjacency_gnn_layer_connectivity,
+        "norm_type": args.adjacency_gnn_norm_type,
+        "num_layers": args.adjacency_gnn_num_layers,
+        "layer": args.adjacency_gnn_layer,
+        "readout": args.adjacency_gnn_readout,
+        "graph_pool": args.adjacency_gnn_graph_pool,
+    }
+
+    cortex_mlp_kwargs = {
+        "hidden_dim": args.cortex_mlp_hidden_dim,
+        "use_residual": args.cortex_mlp_use_residual,
+        "activation": args.cortex_mlp_activation,
+        "use_layernorm": args.cortex_mlp_use_layernorm,
+        "num_layers": args.cortex_mlp_num_layers,
+        "hidden_dims": args.cortex_mlp_hidden_dims,
+        "width_mode": args.cortex_mlp_width_mode,
+        "dropout": args.cortex_mlp_dropout,
+    }
+
+    cog_mlp_kwargs = {
+        "hidden_dim": args.cog_hidden_dim,
+        "num_layers": args.cog_mlp_num_layers,
+        "width_mode": args.cog_mlp_width_mode,
+        "use_residual_to_last": args.cog_mlp_use_residual_to_last,
+        "dropout": args.cog_mlp_dropout,
+        "cog_in_dim": cog_in_dim,
+    }
+
+    adjacency_cnn_kwargs = {
+        "dropout": args.adjacency_cnn_dropout,
+        "conv_channels": args.adjacency_cnn_conv_channels,
+        "kernel_sizes": args.adjacency_cnn_kernel_sizes,
+        "strides": args.adjacency_cnn_strides,
+        "pool_types": args.adjacency_cnn_pool_types,
+        "pool_kernel_sizes": args.adjacency_cnn_pool_kernel_sizes,
+        "negative_slope": args.adjacency_cnn_negative_slope,
+        "norm_type": args.adjacency_cnn_norm_type,
+        "group_norm_groups": args.adjacency_cnn_group_norm_groups,
+        "readout": args.adjacency_cnn_readout,
+    }
+
+
+    cortex_transformer_kwargs = {
+    "dropout": args.cortex_transformer_dropout,
+    "pos_encoding_type": args.pos_encoding_type,
+    "lpe_dim": args.lpe_dim,
+    "hidden_dim": args.cortex_transformer_hidden_dim,
+    "num_layers": args.cortex_transformer_num_layers,
+    "num_heads": args.cortex_transformer_num_heads,
+    "cnn_input_add_flattened_node_features": args.cortex_transformer_cnn_input_add_flattened_node_features,
+    "add_output_skip": args.cortex_transformer_add_output_skip,
+    }
+
+    adjacency_transformer_kwargs = {
+        "dropout": args.adjacency_transformer_dropout,
+        "pos_encoding_type": args.pos_encoding_type,
+        "lpe_dim": args.lpe_dim,
+        "hidden_dim": args.adjacency_transformer_hidden_dim,
+        "num_layers": args.adjacency_transformer_num_layers,
+        "num_heads": args.adjacency_transformer_num_heads,
+        "cnn_input_add_flattened_node_features": args.adjacency_transformer_cnn_input_add_flattened_node_features,
+        "add_output_skip": args.adjacency_transformer_add_output_skip,
+    }
+
+    return {
+        "cortex_gnn_kwargs": cortex_gnn_kwargs,
+        "adjacency_gnn_kwargs": adjacency_gnn_kwargs,
+        "cortex_mlp_kwargs": cortex_mlp_kwargs,
+        "cog_mlp_kwargs": cog_mlp_kwargs,
+        "adjacency_cnn_kwargs": adjacency_cnn_kwargs,
+        "cortex_transformer_kwargs": cortex_transformer_kwargs,
+        "adjacency_transformer_kwargs": adjacency_transformer_kwargs,
+    }

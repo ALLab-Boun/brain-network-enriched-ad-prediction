@@ -23,7 +23,7 @@ torch.backends.cudnn.deterministic = True
 torch.use_deterministic_algorithms(True)
 
 # Local imports
-from exp4_model import FusionModel
+from model import FusionModel
 
 import utils.observe as observe
 import utils.general as general
@@ -36,102 +36,6 @@ def seed_all(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
-def build_model_kwargs_from_args(args, cog_in_dim):
-    cortex_gnn_kwargs = {
-        "dropout": args.cortex_gnn_dropout,
-        "hidden_dim": args.cortex_gnn_hidden_dim,
-        "use_pre_mlp": args.cortex_gnn_use_pre_mlp,
-        "cnn_input_add_flattened_node_features": args.cortex_gnn_cnn_input_add_flattened_node_features,
-        "add_output_skip": args.cortex_gnn_add_output_skip,
-        "layer_connectivity": args.cortex_gnn_layer_connectivity,
-        "norm_type": args.cortex_gnn_norm_type,
-        "num_layers": args.cortex_gnn_num_layers,
-        "layer": args.cortex_gnn_layer,
-        "readout": args.cortex_gnn_readout,
-        "graph_pool": args.cortex_gnn_graph_pool,
-    }
-
-    adjacency_gnn_kwargs = {
-        "dropout": args.adjacency_gnn_dropout,
-        "hidden_dim": args.adjacency_gnn_hidden_dim,
-        "use_pre_mlp": args.adjacency_gnn_use_pre_mlp,
-        "cnn_input_add_flattened_node_features": args.adjacency_gnn_cnn_input_add_flattened_node_features,
-        "add_output_skip": args.adjacency_gnn_add_output_skip,
-        "layer_connectivity": args.adjacency_gnn_layer_connectivity,
-        "norm_type": args.adjacency_gnn_norm_type,
-        "num_layers": args.adjacency_gnn_num_layers,
-        "layer": args.adjacency_gnn_layer,
-        "readout": args.adjacency_gnn_readout,
-        "graph_pool": args.adjacency_gnn_graph_pool,
-    }
-
-    cortex_mlp_kwargs = {
-        "hidden_dim": args.cortex_mlp_hidden_dim,
-        "use_residual": args.cortex_mlp_use_residual,
-        "activation": args.cortex_mlp_activation,
-        "use_layernorm": args.cortex_mlp_use_layernorm,
-        "num_layers": args.cortex_mlp_num_layers,
-        "hidden_dims": args.cortex_mlp_hidden_dims,
-        "width_mode": args.cortex_mlp_width_mode,
-        "dropout": args.cortex_mlp_dropout,
-    }
-
-    cog_mlp_kwargs = {
-        "hidden_dim": args.cog_hidden_dim,
-        "num_layers": args.cog_mlp_num_layers,
-        "width_mode": args.cog_mlp_width_mode,
-        "use_residual_to_last": args.cog_mlp_use_residual_to_last,
-        "dropout": args.cog_mlp_dropout,
-        "cog_in_dim": cog_in_dim,
-    }
-
-    adjacency_cnn_kwargs = {
-        "dropout": args.adjacency_cnn_dropout,
-        "conv_channels": args.adjacency_cnn_conv_channels,
-        "kernel_sizes": args.adjacency_cnn_kernel_sizes,
-        "strides": args.adjacency_cnn_strides,
-        "pool_types": args.adjacency_cnn_pool_types,
-        "pool_kernel_sizes": args.adjacency_cnn_pool_kernel_sizes,
-        "negative_slope": args.adjacency_cnn_negative_slope,
-        "norm_type": args.adjacency_cnn_norm_type,
-        "group_norm_groups": args.adjacency_cnn_group_norm_groups,
-        "readout": args.adjacency_cnn_readout,
-    }
-
-
-    cortex_transformer_kwargs = {
-    "dropout": args.cortex_transformer_dropout,
-    "pos_encoding_type": args.pos_encoding_type,
-    "lpe_dim": args.lpe_dim,
-    "hidden_dim": args.cortex_transformer_hidden_dim,
-    "num_layers": args.cortex_transformer_num_layers,
-    "num_heads": args.cortex_transformer_num_heads,
-    "cnn_input_add_flattened_node_features": args.cortex_transformer_cnn_input_add_flattened_node_features,
-    "add_output_skip": args.cortex_transformer_add_output_skip,
-    }
-
-    adjacency_transformer_kwargs = {
-        "dropout": args.adjacency_transformer_dropout,
-        "pos_encoding_type": args.pos_encoding_type,
-        "lpe_dim": args.lpe_dim,
-        "hidden_dim": args.adjacency_transformer_hidden_dim,
-        "num_layers": args.adjacency_transformer_num_layers,
-        "num_heads": args.adjacency_transformer_num_heads,
-        "cnn_input_add_flattened_node_features": args.adjacency_transformer_cnn_input_add_flattened_node_features,
-        "add_output_skip": args.adjacency_transformer_add_output_skip,
-    }
-
-    return {
-        "cortex_gnn_kwargs": cortex_gnn_kwargs,
-        "adjacency_gnn_kwargs": adjacency_gnn_kwargs,
-        "cortex_mlp_kwargs": cortex_mlp_kwargs,
-        "cog_mlp_kwargs": cog_mlp_kwargs,
-        "adjacency_cnn_kwargs": adjacency_cnn_kwargs,
-        "cortex_transformer_kwargs": cortex_transformer_kwargs,
-        "adjacency_transformer_kwargs": adjacency_transformer_kwargs,
-    }
-
 
 # Main
 def main(args, seed):
@@ -147,17 +51,12 @@ def main(args, seed):
     use_es = args.early_stopping  
 
     # Load and preprocess data
-    # if dataset path is a pt file, use load_dataset_from_single_pt
     data_list = general.load_dataset_from_single_pt(DATASET_PATH, convert_labels=False if args.dataset == "oasis" else True) if DATASET_PATH.endswith(".pt") else None
-    # if data_list is None:
-    #     print("Loading dataset ...")
-    #     data_list = general.load_dataset(DATASET_PATH)
-    #     print(f"Loaded {len(data_list)} graphs.")
 
     # Sanity check
     num_nodes = data_list[0].x.shape[0]
     print(f"Each graph has {num_nodes} nodes and {data_list[0].x.shape[1]} node features.")
-    #print the values of the first node features for the first graph to check they look reasonable
+    # print the values of the first node features for the first graph to check they look reasonable
     print("First node features of the first graph:", data_list[0].x[0])
 
 
@@ -379,11 +278,10 @@ def main(args, seed):
         fold_seed = args.seed + fold
         seed_all(fold_seed)        
 
-
         if args.fusion == "concat":
             print("Using concatenation-based fusion model.")
 
-            branch_kwargs = build_model_kwargs_from_args(args, cog_in_dim)
+            branch_kwargs = general.build_model_kwargs_from_args(args, cog_in_dim)
 
             model = FusionModel(
                 num_nodes=num_nodes,
@@ -391,7 +289,6 @@ def main(args, seed):
                 num_classes=2,
                 dropout=args.dropout,
 
-                
                 include_cortex_gnn=args.include_cortex_gnn,
                 include_adjacency_gnn=args.include_adjacency_gnn,
                 include_adjacency_cnn=args.include_adjacency_cnn,

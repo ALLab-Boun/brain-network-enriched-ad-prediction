@@ -4,6 +4,7 @@ utils/__pycache__/*
 pretrained_model_weights/*
 results_baseline_models/*
 tuning_results_baseline_models_full_matrix/*
+metadata_tables/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
